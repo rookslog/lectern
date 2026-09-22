@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any, NoReturn, Self, cast
 
 from lectern.bundle import Manifest, SourceDocument, StageState, TranscriptSegmentsDocument
-from lectern.evidence import read_selected_evidence
+from lectern.evidence import SelectedEvidence, read_selected_evidence
+from lectern.read import NonreadyBundle, ObservedHit, ObservedSearchResult
 from lectern.records import (
     LEGAL_QUEUE_TRANSITION_SOURCE_VALUES,
     LEGAL_QUEUE_TRANSITION_SOURCES,
@@ -807,6 +808,11 @@ class AutomationStateStore:
         escaping as a bare sqlite exception.
         """
 
+        return [hit for hit, _ in self._search_rows(query, literal=literal, limit=limit)]
+
+    def _search_rows(
+        self, query: str, *, literal: bool = True, limit: int = 50, observed: bool = False
+    ) -> list[tuple[SearchHit, sqlite3.Row]]:
         if limit <= 0:
             return []
         if not literal and any(is_unsegmented_script(character) for character in query):
@@ -825,37 +831,43 @@ class AutomationStateStore:
             and bool(normalized_query)
             and not any(character.isalnum() for character in normalized_query)
         )
+        observation_columns = (
+            ", body, literal, "
+            "(SELECT segments_sha256 FROM indexed_bundles "
+            "WHERE indexed_bundles.bundle_id = segment_index.bundle_id) AS indexed_sha"
+            if observed
+            else ""
+        )
         try:
             if literal:
-                hits: list[SearchHit] = []
+                hits: list[tuple[SearchHit, sqlite3.Row]] = []
                 batch_size = max(50, limit)
                 offset = 0
                 while len(hits) < limit:
                     if tokenless_literal:
                         rows = self._connection.execute(
-                            """
-                            SELECT bundle_id, segment_id, display FROM segment_index
-                            ORDER BY rowid LIMIT ? OFFSET ?
-                            """,
+                            f"SELECT bundle_id, segment_id, display{observation_columns} "
+                            "FROM segment_index ORDER BY rowid LIMIT ? OFFSET ?",
                             (batch_size, offset),
                         ).fetchall()
                     else:
                         rows = self._connection.execute(
-                            """
-                            SELECT bundle_id, segment_id, display FROM segment_index
-                            WHERE literal MATCH ?
-                            ORDER BY rank, rowid LIMIT ? OFFSET ?
-                            """,
+                            f"SELECT bundle_id, segment_id, display{observation_columns} "
+                            "FROM segment_index WHERE literal MATCH ? "
+                            "ORDER BY rank, rowid LIMIT ? OFFSET ?",
                             (expression, batch_size, offset),
                         ).fetchall()
                     hits.extend(
-                        SearchHit(
-                            bundle_id=str(row[0]),
-                            segment_id=None if row[1] is None else int(row[1]),
-                            snippet=_bounded_search_snippet(str(row[2]), query),
+                        (
+                            SearchHit(
+                                bundle_id=str(row["bundle_id"]),
+                                segment_id=_indexed_segment_id(row["segment_id"]),
+                                snippet=_bounded_search_snippet(str(row["display"]), query),
+                            ),
+                            row,
                         )
                         for row in rows
-                        if text_contains_literal(str(row[2]), query)
+                        if text_contains_literal(str(row["display"]), query)
                     )
                     if len(rows) < batch_size:
                         break
@@ -863,24 +875,97 @@ class AutomationStateStore:
                 return hits[:limit]
 
             rows = self._connection.execute(
-                """
-                SELECT bundle_id, segment_id, display FROM segment_index
-                WHERE body MATCH ? ORDER BY rank LIMIT ?
-                """,
+                f"SELECT bundle_id, segment_id, display{observation_columns} "
+                "FROM segment_index WHERE body MATCH ? ORDER BY rank LIMIT ?",
                 (expression, limit),
             ).fetchall()
         except sqlite3.OperationalError as exc:
             raise ValueError(f"invalid search query: {exc}") from exc
         return [
-            SearchHit(
-                bundle_id=str(row[0]),
-                segment_id=None if row[1] is None else int(row[1]),
-                snippet=_bounded_search_snippet(
-                    str(row[2]), _operator_match_term(str(row[2]), query)
+            (
+                SearchHit(
+                    bundle_id=str(row["bundle_id"]),
+                    segment_id=_indexed_segment_id(row["segment_id"]),
+                    snippet=_bounded_search_snippet(
+                        str(row["display"]), _operator_match_term(str(row["display"]), query)
+                    ),
                 ),
+                row,
             )
             for row in rows
         ]
+
+    def search_observed(
+        self, query: str, *, literal: bool = True, limit: int = 50
+    ) -> ObservedSearchResult:
+        """Reconcile a local request, then bind each hit to admitted selected evidence."""
+
+        index_version = int(self._connection.execute("PRAGMA data_version").fetchone()[0])
+        self.refresh_changed_bundles()
+        nonready = [
+            NonreadyBundle(item.bundle_id, item.status)
+            for item in self.list_library()
+            if item.status is not LibraryStatus.READY
+        ]
+        admitted: dict[str, SelectedEvidence] = {}
+        hits: list[ObservedHit] = []
+        for hit, row in self._search_rows(query, literal=literal, limit=limit, observed=True):
+            try:
+                evidence = admitted.get(hit.bundle_id)
+                if evidence is None:
+                    evidence = self._strict_registered_evidence(hit.bundle_id)
+                    admitted[hit.bundle_id] = evidence
+            except AutomationError:
+                raise AutomationError("evidence changed during read") from None
+            if hashlib.sha256(evidence.segments_payload).hexdigest() != row["indexed_sha"]:
+                raise AutomationError("evidence changed during read")
+            segment = next(
+                (item for item in evidence.segments.root if item.id == hit.segment_id), None
+            )
+            if segment is None or (
+                row["display"] != segment.text
+                or row["body"] != operator_segment_text(segment.text)
+                or row["literal"] != segment_text(segment.text)
+            ):
+                raise AutomationError("index changed during read")
+            hits.append(
+                ObservedHit(hit, _selected_observation(hit.bundle_id, hit.segment_id, evidence))
+            )
+        if int(self._connection.execute("PRAGMA data_version").fetchone()[0]) != index_version:
+            raise AutomationError("index changed during read")
+        return ObservedSearchResult(hits, nonready)
+
+    def _strict_registered_evidence(self, bundle_id: str) -> SelectedEvidence:
+        row = self._connection.execute(
+            "SELECT bundle_path FROM library_bundles WHERE bundle_id = ?", (bundle_id,)
+        ).fetchone()
+        if row is None:
+            raise AutomationError("no readable transcript for selected bundle")
+        try:
+            return _read_registered_evidence(
+                bundle_id, Path(str(row[0])), require_manifest_integrity=True
+            )
+        except (OSError, ValueError, RecursionError):
+            raise AutomationError("no readable transcript for selected bundle") from None
+
+    def cite_observed(self, selected: ObservedHit) -> tuple[Anchor, ResolvedAnchor]:
+        """Compare a held observation and mint from the same strictly loaded document."""
+
+        bundle_id = selected.hit.bundle_id
+        evidence = self._strict_registered_evidence(bundle_id)
+        if (
+            _selected_observation(bundle_id, selected.hit.segment_id, evidence)
+            != selected.observation
+        ):
+            raise AutomationError("evidence changed for selected bundle")
+        segments = [item.model_dump(mode="json") for item in evidence.segments.root]
+        for segment in segments:
+            if segment["id"] == selected.hit.segment_id:
+                anchor = make_anchor(
+                    bundle_id, segment["id"], float(segment["start_s"]), str(segment["text"])
+                )
+                return anchor, resolve_against_segments(anchor, segments)
+        raise AutomationError("selected segment not found in bundle")
 
     def _bundle_segments(
         self, bundle_id: str, *, require_manifest_integrity: bool = False
@@ -1545,12 +1630,51 @@ def _read_registered_segments(
     *,
     require_manifest_integrity: bool = False,
 ) -> tuple[bytes, TranscriptSegmentsDocument]:
+    evidence = _read_registered_evidence(
+        bundle_id, bundle_path, require_manifest_integrity=require_manifest_integrity
+    )
+    return evidence.segments_payload, evidence.segments
+
+
+def _read_registered_evidence(
+    bundle_id: str,
+    bundle_path: Path,
+    *,
+    require_manifest_integrity: bool,
+) -> SelectedEvidence:
     manifest = _load_registered_manifest(bundle_id, bundle_path)
     evidence = read_selected_evidence(
         bundle_path, manifest, require_manifest_integrity=require_manifest_integrity
     )
     _assert_registered_source_identity(evidence.source, manifest)
-    return evidence.segments_payload, evidence.segments
+    return evidence
+
+
+def _selected_observation(
+    bundle_id: str, segment_id: int | None, evidence: SelectedEvidence
+) -> str:
+    """Opaque equality signal for the admitted selected evidence, not a revision ID."""
+
+    source = evidence.source
+    identity = [
+        bundle_id,
+        segment_id,
+        source.source.kind.value,
+        source.source.ref,
+        source.sha256,
+        source.bytes,
+        source.transcript.segments,
+        hashlib.sha256(evidence.segments_payload).hexdigest(),
+    ]
+    return hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _indexed_segment_id(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    raise AutomationError("index changed during read")
 
 
 def _manifest_outputs_are_materialized(bundle_path: Path, manifest: Manifest) -> bool:
