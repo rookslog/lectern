@@ -1,0 +1,23 @@
+[
+  {
+    "id": 0,
+    "start_s": 0.0,
+    "end_s": 0.3,
+    "text": "This invented talk introduces a synthetic counting exercise.",
+    "source": "fixture"
+  },
+  {
+    "id": 1,
+    "start_s": 0.4,
+    "end_s": 1.4,
+    "text": "The intervention reduced errors in our synthetic exercise. We assigned the demonstration tasks to two imaginary groups, used the same checklist for each run, and counted slips at the end. The counts are invented to exercise the local reading workflow, not observations about a real intervention. Each group used toy inputs and no participant data. We repeated the procedure only inside this fictional simulation and kept the setup fixed throughout the demonstration. This held only for the simulated task; the field trial has not been conducted.",
+    "source": "fixture"
+  },
+  {
+    "id": 2,
+    "start_s": 1.5,
+    "end_s": 1.9,
+    "text": "The next section asks which evidence could change the interpretation.",
+    "source": "fixture"
+  }
+]

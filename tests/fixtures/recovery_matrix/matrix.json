@@ -1,0 +1,74 @@
+{
+  "query": "intervention reduced errors",
+  "literal": true,
+  "limit": 50,
+  "absent_query": "absentmatrixterm",
+  "question": "Does the intervention reduce field errors?",
+  "tentative_claim": "The intervention reduces field errors.",
+  "qualifier": "This held only for the simulated task; the field trial showed no improvement.",
+  "rows": [
+    {
+      "name": "unchanged",
+      "mutation": "none",
+      "current_fixture": "original_segments.json",
+      "held_error": null,
+      "status": "ready",
+      "diagnostic": "exact",
+      "start_s": 0.4
+    },
+    {
+      "name": "drifting",
+      "mutation": "replace",
+      "current_fixture": "drifting_segments.json",
+      "held_error": "evidence changed",
+      "status": "ready",
+      "diagnostic": "modified",
+      "start_s": 0.4
+    },
+    {
+      "name": "retimed",
+      "mutation": "replace",
+      "current_fixture": "retimed_segments.json",
+      "held_error": "evidence changed",
+      "status": "ready",
+      "diagnostic": "exact",
+      "start_s": 0.65
+    },
+    {
+      "name": "unreadable-missing",
+      "mutation": "remove",
+      "current_fixture": null,
+      "held_error": "no readable transcript",
+      "status": "needs-reprocessing",
+      "diagnostic": "missing",
+      "start_s": null
+    },
+    {
+      "name": "unreadable-malformed",
+      "mutation": "malform",
+      "current_fixture": null,
+      "held_error": "no readable transcript",
+      "status": "needs-reprocessing",
+      "diagnostic": "missing",
+      "start_s": null
+    },
+    {
+      "name": "unreadable-undeclared-drift",
+      "mutation": "undeclared",
+      "current_fixture": null,
+      "held_error": "no readable transcript",
+      "status": "needs-reprocessing",
+      "diagnostic": "modified",
+      "start_s": 0.4
+    },
+    {
+      "name": "nonready-readable",
+      "mutation": "damage-metadata",
+      "current_fixture": "original_segments.json",
+      "held_error": null,
+      "status": "needs-reprocessing",
+      "diagnostic": "exact",
+      "start_s": 0.4
+    }
+  ]
+}
