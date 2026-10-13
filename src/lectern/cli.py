@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from lectern import __version__
+from lectern.agent_packet import check_citations, packet_markdown, talk_packet
 from lectern.automation import (
     DEFAULT_STATE_PATH,
     DEFAULT_YOUTUBE_API_KEY_ENV,
@@ -28,6 +29,7 @@ from lectern.evidence import SelectedEvidence
 from lectern.ingest import IngestError
 from lectern.migrations import MigrationError, migrate_bundle
 from lectern.readable import format_time, source_details
+from lectern.readable import plain_field as _plain_search_field
 from lectern.records import redact_paths
 
 # Commands that return stored data to a caller, and therefore must emit no
@@ -53,13 +55,17 @@ OUTWARD_COMMANDS = (
     "library search",
     "library cite",
     "transcript",
+    "export",
+    "check-citations",
     "migrate",
 )
 
 USAGE = """usage: lectern [--version] <command>
 
 commands:
+  check-citations check a review's citations against current ready evidence
   doctor         check required local tools and state-store access
+  export         export an experimental talk packet for agents
   ingest         ingest local media into a bundle
   library        list, search, or cite ingested bundles from local state
   migrate        migrate one bundle to the current manifest schema
@@ -773,6 +779,67 @@ def _transcript(args: Sequence[str]) -> int:
     return 0
 
 
+def _export(args: Sequence[str]) -> int:
+    rest, state_path, json_flag = _parse_common(args)
+    output_format = "json"
+    if len(rest) == 3 and rest[1] == "--format":
+        output_format = rest[2]
+        rest = rest[:1]
+    if (
+        len(rest) != 1
+        or rest[0].startswith("-")
+        or json_flag
+        or output_format not in ("json", "md")
+    ):
+        print(
+            "usage: lectern export BUNDLE_ID [--format json|md] [--state PATH]",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        with open_state(state_path) as state:
+            packet = talk_packet(state, rest[0])
+    except (AutomationError, ValueError, RecursionError) as exc:
+        print(f"export: {redact_paths(str(exc))}", file=sys.stderr)
+        return 3
+    except OSError as exc:
+        print(f"export: {redact_paths(str(exc))}", file=sys.stderr)
+        return 1
+    if output_format == "json":
+        _print_json(packet)
+    else:
+        print(packet_markdown(packet))
+    return 0
+
+
+def _check_citations(args: Sequence[str]) -> int:
+    rest, state_path, json_output = _parse_common(args)
+    if len(rest) != 1 or rest[0].startswith("-"):
+        print("usage: lectern check-citations FILE [--state PATH] [--json]", file=sys.stderr)
+        return 2
+    try:
+        text = Path(rest[0]).read_text(encoding="utf-8")
+        with open_state(state_path) as state:
+            report = check_citations(state, text)
+    except (AutomationError, ValueError) as exc:
+        print(f"check-citations: {redact_paths(str(exc))}", file=sys.stderr)
+        return 3
+    except OSError as exc:
+        print(f"check-citations: {redact_paths(str(exc))}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(report)
+    else:
+        for citation in report["citations"]:
+            if citation["status"] != "ok":
+                print(f"{_plain_search_field(citation['token'])}: {citation['status']}")
+        print(
+            f"citations: {report['ok']} ok, {report['problems']} problems; "
+            f"uncited paragraphs: {report['uncited_paragraphs']}"
+        )
+    return 1 if report["problems"] else 0
+
+
 def _parse_common(args: Sequence[str]) -> tuple[list[str], Path, bool]:
     state_path = DEFAULT_STATE_PATH
     json_output = False
@@ -827,17 +894,6 @@ def _queue_usage() -> None:
         "[--asr-model NAME] [--allow-model-download] [--language CODE]} "
         "[--state PATH] [--json]",
         file=sys.stderr,
-    )
-
-
-def _plain_search_field(value: str) -> str:
-    """Keep one search field on one terminal row without changing its evidence."""
-
-    return "".join(
-        f"\\u{ord(character):04x}"
-        if ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F or character in "\u2028\u2029"
-        else character
-        for character in value
     )
 
 
@@ -975,6 +1031,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _library(args[1:])
         if args and args[0] == "transcript":
             return _transcript(args[1:])
+        if args and args[0] == "export":
+            return _export(args[1:])
+        if args and args[0] == "check-citations":
+            return _check_citations(args[1:])
         if args and args[0] == "queue":
             return _queue(args[1:])
         if len(args) >= 2 and args[0] == "schema" and args[1] == "export":

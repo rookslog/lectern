@@ -5,6 +5,17 @@ from __future__ import annotations
 from lectern.bundle import Source
 
 
+def plain_field(value: str) -> str:
+    """Keep one field on one terminal row without changing its evidence."""
+
+    return "".join(
+        f"\\u{ord(character):04x}"
+        if ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F or character in "\u2028\u2029"
+        else character
+        for character in value
+    )
+
+
 def source_details(source: Source) -> dict[str, str | None]:
     """Optional provenance facts shared by the overview card and library show."""
 

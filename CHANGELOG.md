@@ -14,6 +14,11 @@ versioned release notes will become stricter once preview support stabilizes.
   embedded manifest sources), and retained search-title projection. Non-UTF-8
   metadata strings are ignored with the existing acquire-stage warning and
   filename fallback.
+- Added experimental `lectern export BUNDLE_ID` JSON/Markdown talk packets with
+  source facts, layer limits, and existing content-hash anchors extended with
+  time-range and quote selectors. Added `lectern check-citations FILE` for
+  current-evidence citation resolution, whole-second time checks, and uncited
+  paragraph counts. Both commands project filesystem paths out of their output.
 - Added adjacent local `.info.json` metadata intake with an allowlisted optional
   external identity, channel, publication date, and talk title. Captured metadata
   bytes are bound to queue approval and bundle identity; malformed metadata is

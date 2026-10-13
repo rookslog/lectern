@@ -6,7 +6,12 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from lectern.bundle import Manifest, SourceDocument, TranscriptSegmentsDocument
+from lectern.bundle import (
+    Manifest,
+    SourceDocument,
+    TranscriptMetadataDocument,
+    TranscriptSegmentsDocument,
+)
 
 
 @dataclass(frozen=True)
@@ -66,3 +71,14 @@ def read_selected_evidence(
         _assert_declared_payload(manifest, source.transcript.segments, segments_payload)
     segments = TranscriptSegmentsDocument.model_validate_json(segments_payload, strict=True)
     return SelectedEvidence(source, segments_payload, segments)
+
+
+def read_transcript_metadata(
+    bundle: Path, manifest: Manifest, source: SourceDocument
+) -> TranscriptMetadataDocument:
+    """Read the selected metadata through the same contained, declared-byte boundary."""
+
+    path = source.transcript.metadata
+    payload = _contained_payload(bundle, path)
+    _assert_declared_payload(manifest, path, payload)
+    return TranscriptMetadataDocument.model_validate_json(payload, strict=True)

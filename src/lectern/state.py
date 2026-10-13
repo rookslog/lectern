@@ -470,6 +470,14 @@ class AutomationStateStore:
             raise AutomationError(f"source item not found: {source_item_id}")
         return source_item_from_row(row)
 
+    def list_registered_bundle_ids(self) -> list[str]:
+        """Read registered identities without deriving status or hashing artifacts."""
+
+        rows = self._connection.execute(
+            "SELECT bundle_id FROM library_bundles ORDER BY bundle_id"
+        ).fetchall()
+        return [str(row[0]) for row in rows]
+
     def list_library(self) -> list[LibraryBundle]:
         rows = self._connection.execute(
             """

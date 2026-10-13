@@ -46,6 +46,8 @@ OUTWARD_COMMANDS = (
     "library search",
     "library cite",
     "transcript",
+    "export",
+    "check-citations",
     "migrate",
 )
 
@@ -354,6 +356,63 @@ def test_every_outward_command_is_covered() -> None:
         "outward-facing commands and their path-projection coverage disagree; "
         f"uncovered={sorted(declared - covered)} stale={sorted(covered - declared)}"
     )
+
+
+@pytest.mark.parametrize("output_format", ["json", "md"])
+def test_export_emits_no_filesystem_path(
+    tmp_path: Path, capsys: CaptureFixture[str], output_format: str
+) -> None:
+    folder = _watched_folder(tmp_path)
+    media = folder / "synthetic_talk.wav"
+    media.with_suffix(".transcript.txt").write_text(
+        f"Synthetic evidence referring to '{folder / 'private.txt'}'.", encoding="utf-8"
+    )
+    state_path = tmp_path / "state.sqlite"
+    with open_state(state_path) as state:
+        result = state.ingest_one_shot(media, tmp_path / "bundles")
+    assert (
+        cli.main(
+            [
+                "export",
+                result.manifest.bundle_id,
+                "--format",
+                output_format,
+                "--state",
+                str(state_path),
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    _assert_no_path(output, folder, "export")
+    assert PATH_REDACTED in output
+    if output_format == "json":
+        packet = json.loads(output)
+        anchor = packet["segments"][0]["anchor"]
+        with open_state(state_path) as state:
+            original, _ = state.cite_segment(result.manifest.bundle_id, 0)
+        assert anchor["text_sha256"] == original.text_sha256
+        assert anchor["selectors"][1]["exact"] == packet["segments"][0]["text"]
+
+
+@pytest.mark.parametrize("json_output", [False, True], ids=["plain", "json"])
+def test_check_citations_emits_no_filesystem_path(
+    tmp_path: Path, capsys: CaptureFixture[str], json_output: bool
+) -> None:
+    folder = _watched_folder(tmp_path)
+    review = folder / "review.md"
+    review.write_text(f"Synthetic claim [t=00:00 {tmp_path / 'missing-bundle'}#0].")
+    args = ["check-citations", str(review), "--state", str(tmp_path / "state.sqlite")]
+    if json_output:
+        args.append("--json")
+    assert cli.main(args) == 1
+    captured = capsys.readouterr()
+    _assert_no_path(captured.out + captured.err, folder, "check-citations")
+    assert str(tmp_path) not in captured.out + captured.err
+    review.unlink()
+    assert cli.main(args) == 1
+    captured = capsys.readouterr()
+    _assert_no_path(captured.out + captured.err, folder, "check-citations")
 
 
 def test_migrate_success_emits_no_filesystem_path(

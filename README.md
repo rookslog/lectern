@@ -205,6 +205,43 @@ past an hour. JSON includes `bundle_id`, `title`, and segments with `id`, `start
 
 Use `--json` on source, queue, and library commands for machine-readable output.
 
+### For agents: packets and citation checks
+
+`lectern export BUNDLE_ID` exports a ready talk's source facts, layer availability
+and evidence limits, and transcript segments with durable anchors. The JSON
+packet is **experimental** (`lectern.talk-packet`, version `0.1`); its shape may
+change before a stability decision. Use `--format md` for a readable packet.
+Agents write breakdowns, briefs, and reviews; Lectern supplies the evidence.
+
+```bash
+uv run lectern export <bundle-id> --format json --state PATH
+uv run lectern export <bundle-id> --format md --state PATH
+uv run lectern check-citations review.md --state PATH
+uv run lectern check-citations review.md --state PATH --json
+```
+
+Cite moments as `[t=MM:SS <12hex>#<seg>]` (use `H:MM:SS` past an hour), for example
+`[t=00:01 a1b2c3d4e5f6#1]`. The short ID is the bundle ID's final 12-hex suffix;
+the checker resolves it only when it uniquely matches a registered bundle.
+Full bundle ID tokens remain accepted. Each packet anchor keeps the full
+`bundle_id`, adds `short_id` and a short-form `cite`, preserves Lectern's content
+hash and canonicalization version, and adds time-range and exact-quote selectors.
+Displayed text and quotes are path-redacted; hashes still refer to original
+evidence, so a redacted quote need not hash to the anchor's digest.
+
+The checker reports `ok`, `time_mismatch`, `unknown_bundle`, `ambiguous_bundle`,
+`unknown_segment`, `not_ready`, or `malformed` for each token against current
+strict registered evidence. Citation-like tokens with invalid times or segment
+numbers count as problems, not uncited paragraphs. Times
+must match the segment start's whole second. It exits 1 for problem tokens and
+0 otherwise; uncited paragraphs are counted but do not fail the check. This
+checks references, not whether a claim is supported or whether every claim is
+cited. Short tokens do not carry a historical text hash: after legitimate
+reprocessing, use stored packet anchors to compare historical content.
+
+Visual and speaker presence follow manifest stage states. Translation is absent
+because the current bundle schema has no translation stage or artifact.
+
 A failed ingest rerun still reports its invocation error, but retains the prior
 completion when that exact owned, registered bundle survives. Readiness remains
 separately derived from current evidence. Queue state is not a complete history
