@@ -504,13 +504,24 @@ class AutomationStateStore:
         return _library_bundle_from_row(row, status=_library_status_from_row(row))
 
     def get_library_manifest(self, bundle_id: str) -> Manifest:
-        """Load the manifest belonging to the registered bundle, not an arbitrary path."""
+        """Load the manifest belonging to the registered bundle, not an arbitrary path.
 
-        bundle = self.get_library_bundle(bundle_id)
+        Looks up only the registered path: deriving library status here would
+        rehash every declared artifact, including audio, once per call.
+        """
+
         try:
-            return _load_registered_manifest(bundle_id, Path(bundle.bundle_path))
+            return _load_registered_manifest(bundle_id, self._registered_bundle_path(bundle_id))
         except (ValueError, RecursionError) as exc:
             raise AutomationError(str(exc)) from exc
+
+    def _registered_bundle_path(self, bundle_id: str) -> Path:
+        row = self._connection.execute(
+            "SELECT bundle_path FROM library_bundles WHERE bundle_id = ?", (bundle_id,)
+        ).fetchone()
+        if row is None:
+            raise AutomationError(f"bundle not found in library: {bundle_id}")
+        return Path(str(row[0]))
 
     def get_registered_evidence(self, bundle_id: str) -> SelectedEvidence:
         """Read a registered bundle's selected evidence without deriving library status.
@@ -520,12 +531,7 @@ class AutomationStateStore:
         each matching talk's media. Integrity of the selected files is still checked.
         """
 
-        row = self._connection.execute(
-            "SELECT bundle_path FROM library_bundles WHERE bundle_id = ?", (bundle_id,)
-        ).fetchone()
-        if row is None:
-            raise AutomationError(f"bundle not found in library: {bundle_id}")
-        bundle_path = Path(str(row[0]))
+        bundle_path = self._registered_bundle_path(bundle_id)
         try:
             manifest = _load_registered_manifest(bundle_id, bundle_path)
             evidence = read_selected_evidence(
