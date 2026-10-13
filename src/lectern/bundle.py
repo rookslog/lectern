@@ -176,6 +176,17 @@ class Source(ArtifactModel):
     duration_s: FiniteFloat | None = None
     external: ExternalSource | None = None
 
+    @field_validator("published", mode="before")
+    @classmethod
+    def parse_published(cls, value: object) -> object:
+        # The model-level before-validator makes strict JSON validation run on
+        # parsed Python values, where an ISO-8601 string is not a datetime. A
+        # populated `published` (first written by info.json intake) therefore
+        # failed every strict evidence read of its bundle.
+        if isinstance(value, str):
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return value
+
     @model_validator(mode="before")
     @classmethod
     def validate_local_byte_representation(cls, data: object) -> object:

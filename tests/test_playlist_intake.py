@@ -68,6 +68,9 @@ def test_folder_playlist_intake_orders_titles_and_keeps_only_allowed_metadata(
     rows: list[dict[str, Any]] = json.loads(capsys.readouterr().out)["bundles"]
     assert [row["title"] for row in rows] == ["Making maps", "Paths through maps"]
     assert [row["external"]["playlist_index"] for row in rows] == [1, 2]
+    # A populated `published` must survive the strict evidence reader.
+    assert cli.main(["transcript", rows[0]["bundle_id"], "--state", str(state_path)]) == 0
+    capsys.readouterr()
     assert cli.main([*args, "--json"]) == 0
     assert {row["title"] for row in json.loads(capsys.readouterr().out)["bundles"]} == {
         "Making maps",
