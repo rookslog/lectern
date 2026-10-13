@@ -90,7 +90,10 @@ def read_transcript_metadata(
 def read_frames(bundle: Path, manifest: Manifest) -> FramesDocument | None:
     """Read declared visual evidence through the same contained-byte boundary."""
 
-    if manifest.stages[StageName.VISUAL].state is not StageState.DONE:
+    visual = manifest.stages[StageName.VISUAL]
+    if visual.state is not StageState.DONE or not any(
+        output.path == "visual/frames.json" for output in visual.outputs
+    ):
         return None
     payload = _contained_payload(bundle, "visual/frames.json")
     _assert_declared_payload(manifest, "visual/frames.json", payload)

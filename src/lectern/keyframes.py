@@ -92,11 +92,12 @@ def extract_frames(
             f"gt(scene,0.30)+isnan(prev_selected_t)"
             f"+gt(floor(t/{interval}),floor(prev_selected_t/{interval}))"
         )
-        filters = (
-            f"[0:v:0]setpts=PTS-STARTPTS,select='{selection}',metadata=mode=print,"
-            "scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease,"
-            "showinfo,split=2[jpeg][small];[small]scale=64:36,format=gray[gray]"
+        selection_chain = f"[0:v:0]setpts=PTS-STARTPTS,select='{selection}'"
+        sizing = (
+            "scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease,showinfo"
         )
+        # Candidate decoding still scans the whole video; only thumbnails are stored.
+        filters = f"{selection_chain},metadata=mode=print,{sizing},scale=64:36,format=gray[gray]"
         result = subprocess.run(
             [
                 ffmpeg,
@@ -111,17 +112,6 @@ def extract_frames(
                 "2",
                 "-filter_complex",
                 filters,
-                "-map",
-                "[jpeg]",
-                "-fps_mode",
-                "vfr",
-                "-c:v",
-                "mjpeg",
-                "-q:v",
-                "5",
-                "-threads",
-                "2",
-                str(candidates / "%08d.jpg"),
                 "-map",
                 "[gray]",
                 "-fps_mode",
@@ -143,38 +133,84 @@ def extract_frames(
             raise KeyframeError("ffmpeg frame extraction failed")
         facts = re.findall(r"\bpts_time:([\d.eE+-]+).*?\bs:(\d+)x(\d+)", result.stderr)
         scores = re.findall(r"lavfi.scene_score=([\d.eE+-]+)", result.stderr)
-        images = sorted(candidates.glob("*.jpg"))
         gray_size = (candidates / "hashes.gray").stat().st_size
-        expected_gray = _THUMB_BYTES * len(images)
-        if len(facts) != len(images) or len(scores) != len(images) or gray_size != expected_gray:
-            raise KeyframeError("ffmpeg candidate timestamps and images do not match")
-        frames_dir = bundle / "visual/frames"
-        frames_dir.mkdir(parents=True)
-        frames: list[FrameRecord] = []
+        expected_gray = _THUMB_BYTES * len(facts)
+        if len(scores) != len(facts) or gray_size != expected_gray:
+            raise KeyframeError("ffmpeg candidate timestamps, scores and thumbnails do not match")
+        kept: list[int] = []
         previous: bytes | None = None
         with (candidates / "hashes.gray").open("rb") as thumbnails:
-            for image, (timestamp, width, height), score in zip(images, facts, scores, strict=True):
+            for ordinal in range(len(facts)):
                 gray = thumbnails.read(_THUMB_BYTES)
                 if previous is not None and _mean_abs_diff(gray, previous) < _MIN_MEAN_ABS_DIFF:
                     continue
-                index = len(frames)
-                relative = f"visual/frames/{index:04d}.jpg"
-                destination = bundle / relative
-                image.replace(destination)
-                frames.append(
-                    FrameRecord(
-                        index=index,
-                        t_s=float(timestamp),
-                        file=relative,
-                        sha256=hashlib.sha256(destination.read_bytes()).hexdigest(),
-                        reason="scene" if float(score) > 0.30 else "interval",
-                        width=int(width),
-                        height=int(height),
-                    )
-                )
+                kept.append(ordinal)
                 previous = gray
-                if len(frames) >= maximum:
+                if len(kept) >= maximum:
                     break
+        if kept:
+            ordinals = "+".join(f"eq(n\\,{ordinal})" for ordinal in kept)
+            result = subprocess.run(
+                [
+                    ffmpeg,
+                    "-hide_banner",
+                    "-loglevel",
+                    "info",
+                    "-threads",
+                    "2",
+                    "-i",
+                    str(snapshot),
+                    "-filter_complex_threads",
+                    "2",
+                    "-filter_complex",
+                    f"{selection_chain},select='{ordinals}',{sizing}[jpeg]",
+                    "-map",
+                    "[jpeg]",
+                    "-fps_mode",
+                    "vfr",
+                    "-frames:v",
+                    str(len(kept)),
+                    "-c:v",
+                    "mjpeg",
+                    "-q:v",
+                    "5",
+                    "-threads",
+                    "2",
+                    str(candidates / "%08d.jpg"),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise KeyframeError("ffmpeg kept frame extraction failed")
+            kept_facts = re.findall(r"\bpts_time:([\d.eE+-]+).*?\bs:(\d+)x(\d+)", result.stderr)
+            if kept_facts != [facts[ordinal] for ordinal in kept]:
+                raise KeyframeError(
+                    "ffmpeg kept frames do not match candidate timestamps and sizes"
+                )
+        images = sorted(candidates.glob("*.jpg"))
+        if len(images) != len(kept):
+            raise KeyframeError("ffmpeg kept frame count and images do not match")
+        frames_dir = bundle / "visual/frames"
+        frames_dir.mkdir(parents=True)
+        frames: list[FrameRecord] = []
+        for index, (ordinal, image) in enumerate(zip(kept, images, strict=True)):
+            timestamp, width, height = facts[ordinal]
+            relative = f"visual/frames/{index:04d}.jpg"
+            destination = bundle / relative
+            image.replace(destination)
+            frames.append(
+                FrameRecord(
+                    index=index,
+                    t_s=float(timestamp),
+                    file=relative,
+                    sha256=hashlib.sha256(destination.read_bytes()).hexdigest(),
+                    reason="scene" if float(scores[ordinal]) > 0.30 else "interval",
+                    width=int(width),
+                    height=int(height),
+                )
+            )
         document = FramesDocument(frames)
         (bundle / "visual/frames.json").write_text(document.model_dump_json(indent=2) + "\n")
         return document

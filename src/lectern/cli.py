@@ -93,6 +93,11 @@ def _doctor() -> int:
         ok = False
     else:
         print(f"ffmpeg: OK ({ffmpeg})")
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        print("ffprobe: MISSING (needed for --frames)")
+    else:
+        print(f"ffprobe: OK ({ffprobe})")
     state = preflight_state_store(DEFAULT_STATE_PATH)
     if state.ok:
         print(f"state: OK ({state.path})")

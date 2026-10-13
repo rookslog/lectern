@@ -184,7 +184,7 @@ def packet_markdown(packet: dict[str, Any]) -> str:
                 f"; method: {layer['method']}; language: {layer['language'] or 'unknown'}"
                 f"; segments: {layer['segment_count']}; evidence limit: {layer['evidence_limit']}"
             )
-        elif name == "visual" and layer["present"]:
+        elif name == "visual" and "frame_count" in layer:
             description += (
                 f"; frames: {layer['frame_count']}; method: {layer['method']}"
                 f"; evidence limit: {layer['evidence_limit']}"
@@ -206,10 +206,7 @@ def packet_markdown(packet: dict[str, Any]) -> str:
         )
         for frame in packet["frames"]:
             path = frame["file"].removeprefix("visual/")
-            lines.append(
-                f"[t={format_time(frame['t_s'])}] {path} ({frame['reason']}); "
-                f"index {frame['index']}; cite {frame['cite']}"
-            )
+            lines.append(f"{frame['cite']} {path} ({frame['reason']})")
     # Evidence may contain controls/newlines; keep each field on its own row.
     return "\n".join(" ".join(plain_field(str(line)).split()) for line in lines)
 

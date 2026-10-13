@@ -127,7 +127,14 @@ def test_video_frames_are_deduplicated_declared_and_citeable(
     )
     markdown = capsys.readouterr().out
     assert "## Frames" in markdown and "#f<index>" in markdown
-    assert "[t=00:04] frames/0001.jpg (scene)" in markdown
+    assert f"[t=00:04 {short}#f1] frames/0001.jpg (scene)" in markdown
+    frame_rows = [
+        line for line in markdown.split("## Frames", 1)[1].splitlines() if line.startswith("[t=")
+    ]
+    review.write_text("\n\n".join(frame_rows), encoding="utf-8")
+    assert cli.main(check) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] == 3 and report["problems"] == 0
     assert cli.main(["library", "show", bundle_id, "--state", str(tmp_path / "state.db")]) == 0
     assert "Visual: yes (3 frames)" in capsys.readouterr().out
     # Queue options must not replay the differently processed one-shot bundle.
@@ -164,6 +171,30 @@ def test_video_frames_are_deduplicated_declared_and_citeable(
 
     document = FramesDocument.model_validate_json((bundle / "visual/frames.json").read_bytes())
     assert FramesDocument.model_validate_json(document.model_dump_json()) == document
+
+
+def test_max_frames_one_leaves_only_one_bundle_jpeg(
+    video: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bundle, _ = ingest(video, tmp_path, capsys, "--frames", "--max-frames", "1")
+    assert list(bundle.rglob("*.jpg")) == [bundle / "visual/frames/0000.jpg"]
+
+
+def test_visual_done_without_declared_frames_exports(
+    video: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bundle, bundle_id = ingest(video, tmp_path, capsys)
+    manifest = Manifest.load(bundle)
+    manifest.stages[StageName.VISUAL].state = StageState.DONE
+    manifest.save(bundle)
+    packet = export(bundle_id, tmp_path, capsys)
+    assert packet["layers"]["visual"] == {"present": True}
+    assert packet["frames"] == []
+    assert (
+        cli.main(["export", bundle_id, "--format", "md", "--state", str(tmp_path / "state.db")])
+        == 0
+    )
+    assert "- visual: present\n" in capsys.readouterr().out
 
 
 def test_audio_with_frames_reports_no_video(
