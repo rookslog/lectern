@@ -5,6 +5,10 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Added timed VTT/SRT sidecar ingestion, including language-tagged filenames and
+  rolling auto-caption de-duplication, with captured caption bytes bound to queue
+  approval. Added optional local faster-whisper ASR via `lectern[asr]`, model and
+  language flags, and additive language/backend transcript metadata.
 - Replaced the extracted first-sentence summary with an honest overview card at
   `analysis/summary.md`, retaining its artifact path, stage, and manifest shape.
   Lectern does not summarize; agents write summaries citing Lectern's anchors.

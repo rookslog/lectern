@@ -395,6 +395,12 @@ class TranscriptBackend(ArtifactModel):
     argv_sha256: Sha256Digest | None = None
     input_argument_mode: str | None = None
     timeout_s: FiniteFloat | None = None
+    sidecar_filename: str | None = None
+    model: str | None = None
+    library_version: str | None = None
+    compute_type: str | None = None
+    detected_language: str | None = None
+    language_probability: FiniteFloat | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -417,6 +423,7 @@ class TranscriptMetadataDocument(ArtifactModel):
     generated_at: datetime
     method: str
     backend: TranscriptBackend
+    language: str | None = None
     remote_services: RemoteServices
     evidence_limit: str
     source_media: ContentIdentity
