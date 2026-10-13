@@ -1,0 +1,68 @@
+{
+  "$defs": {
+    "FrameRecord": {
+      "additionalProperties": false,
+      "description": "One sampled image, with a timestamp relative to the captured video.",
+      "properties": {
+        "index": {
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "t_s": {
+          "minimum": 0,
+          "title": "T S",
+          "type": "number"
+        },
+        "file": {
+          "pattern": "^(?![A-Za-z]:)(?![\\s\\S]*\\u0000)(?![\\s\\S]*\\\\)(?![\\s\\S]*(?:^|/)\\.\\.?(?:/|$))[^/]+(?:/[^/]+)*$",
+          "title": "File",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "scene",
+            "interval"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "maximum": 1280,
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "maximum": 1280,
+          "title": "Height",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "index",
+        "t_s",
+        "file",
+        "sha256",
+        "reason",
+        "width",
+        "height"
+      ],
+      "title": "FrameRecord",
+      "type": "object"
+    }
+  },
+  "description": "`visual/frames.json`, an ordered array of unique frame indices.",
+  "items": {
+    "$ref": "#/$defs/FrameRecord"
+  },
+  "title": "FramesDocument",
+  "type": "array",
+  "x-lectern-uniqueBy": "index"
+}

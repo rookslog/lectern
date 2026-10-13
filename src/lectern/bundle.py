@@ -14,7 +14,7 @@ import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 from pydantic import (
     AfterValidator,
@@ -31,6 +31,7 @@ from pydantic import (
 from lectern.records import redact_paths
 
 SCHEMA_VERSION = "1.1.0"
+_RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})")
 CONTENT_REF_PATTERN = r"^sha256:[0-9a-f]{64}$"
 _CONTENT_REF = re.compile(CONTENT_REF_PATTERN)
 
@@ -183,7 +184,11 @@ class Source(ArtifactModel):
         # parsed Python values, where an ISO-8601 string is not a datetime. A
         # populated `published` (first written by info.json intake) therefore
         # failed every strict evidence read of its bundle.
+        # Only RFC 3339 date-times, as the exported schema declares (#93);
+        # fromisoformat alone would also accept plain or week dates and naive times.
         if isinstance(value, str):
+            if _RFC3339.fullmatch(value) is None:
+                raise ValueError("published must be an RFC 3339 date-time")
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
         return value
 
@@ -267,6 +272,9 @@ class Manifest(ArtifactModel):
     model_config = {"extra": "forbid", "json_schema_extra": _require_manifest_schema_version}
 
     def save(self, bundle_dir: Path) -> Path:
+        # Saving serializes every 1.1.0 field (defaults included), so a manifest
+        # loaded as 1.0.0 must not keep claiming 1.0.0 once rewritten (#93).
+        self.schema_version = SCHEMA_VERSION
         path = bundle_dir / MANIFEST_NAME
         return atomic_write_text(path, self.model_dump_json(indent=2) + "\n")
 
@@ -485,11 +493,41 @@ class TranscriptSegmentsDocument(RootModel[list[TranscriptSegmentRecord]]):
         return self
 
 
+class FrameRecord(ArtifactModel):
+    """One sampled image, with a timestamp relative to the captured video."""
+
+    index: NonNegativeStrictInt
+    t_s: Annotated[FiniteFloat, Field(strict=True, ge=0)]
+    file: BundleRelativePath
+    sha256: Sha256Digest
+    reason: Literal["scene", "interval"]
+    width: Annotated[int, Field(strict=True, gt=0, le=1280)]
+    height: Annotated[int, Field(strict=True, gt=0, le=1280)]
+
+    model_config = {"extra": "forbid", "strict": True}
+
+
+class FramesDocument(RootModel[list[FrameRecord]]):
+    """`visual/frames.json`, an ordered array of unique frame indices."""
+
+    model_config = {"strict": True, "json_schema_extra": {"x-lectern-uniqueBy": "index"}}
+
+    @model_validator(mode="after")
+    def validate_document(self) -> FramesDocument:
+        indices = [frame.index for frame in self.root]
+        if len(indices) != len(set(indices)):
+            raise ValueError("frame indices must be unique")
+        if any(left.t_s > right.t_s for left, right in zip(self.root, self.root[1:], strict=False)):
+            raise ValueError("frames must be ordered by timestamp")
+        return self
+
+
 ARTIFACT_MODELS: dict[str, type[BaseModel]] = {
     "manifest": Manifest,
     "source": SourceDocument,
     "transcript-segments": TranscriptSegmentsDocument,
     "transcript-metadata": TranscriptMetadataDocument,
+    "frames": FramesDocument,
 }
 
 

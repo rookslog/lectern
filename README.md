@@ -130,6 +130,21 @@ present sidecar when an explicit command supplies the transcript instead.
 This binds the input Lectern supplies, not the behavior or faithfulness of an
 arbitrary user command. It does not authenticate previously generated bundles.
 
+### Frames
+
+Use `lectern ingest talk.mp4 --frames` (or `lectern queue ingest ITEM --frames`)
+to keep local JPEG samples of slides, boards, and other video content. Lectern
+combines scene changes with interval sampling, removes near-identical consecutive
+frames, and keeps timestamps in `visual/frames.json`. Defaults are
+`--frame-interval 30` seconds and `--max-frames 300`; JPEGs have a longest side
+of at most 1280 pixels. Audio-only sources report “no video stream.” Without
+`--frames`, visual extraction is not requested.
+
+Frames are samples; content between frames is not represented. There is no OCR
+in this slice. Frames stay local like all bundle artifacts. Agent packets list
+them with citations such as `[t=00:04 a1b2c3d4e5f6#f1]`; `check-citations`
+checks frame indices and timestamps against the current declared frame index.
+
 Lectern also has an early local automation spine for folder sources. It records
 source and queue state in local SQLite, scans local folders without network
 access, requires explicit queue approval before ingesting a discovered item, and
@@ -230,11 +245,11 @@ Displayed text and quotes are path-redacted; hashes still refer to original
 evidence, so a redacted quote need not hash to the anchor's digest.
 
 The checker reports `ok`, `time_mismatch`, `unknown_bundle`, `ambiguous_bundle`,
-`unknown_segment`, `not_ready`, or `malformed` for each token against current
-strict registered evidence. Citation-like tokens with invalid times or segment
-numbers count as problems, not uncited paragraphs. Times
-must match the segment start's whole second. It exits 1 for problem tokens and
-0 otherwise; uncited paragraphs are counted but do not fail the check. This
+`unknown_segment`, `unknown_frame`, `not_ready`, or `malformed` for each token
+against current strict registered evidence. Citation-like tokens with invalid
+times or segment/frame numbers count as problems, not uncited paragraphs. Times
+must match the segment start or frame timestamp's whole second. It exits 1 for
+problem tokens and 0 otherwise; uncited paragraphs are counted but do not fail the check. This
 checks references, not whether a claim is supported or whether every claim is
 cited. Short tokens do not carry a historical text hash: after legitimate
 reprocessing, use stored packet anchors to compare historical content.
@@ -333,7 +348,7 @@ not rerun for the current segmenter version.
   API key. OAuth/private playlist access is not implemented.
 - Lectern does not download media, captions, or transcripts from external
   services.
-- MCP/API access, ranked or semantic search, visual evidence, OCR, reference resolution, and
+- MCP/API access, ranked or semantic search, OCR, reference resolution, and
   citation-gated synthesis are later roadmap items.
 - The local command transcriber path is an integration point, not a bundled ASR
   engine or transcript-quality guarantee.

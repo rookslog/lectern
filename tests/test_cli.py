@@ -53,6 +53,7 @@ def test_doctor_reports_required_local_tools(
     captured = capsys.readouterr()
     assert "python: OK" in captured.out
     assert "ffmpeg: OK (/usr/bin/ffmpeg)" in captured.out
+    assert "ffprobe: MISSING (needed for --frames)" in captured.out
     assert captured.err == ""
 
 
