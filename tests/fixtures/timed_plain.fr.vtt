@@ -1,0 +1,20 @@
+WEBVTT
+
+NOTE Synthetic captions invented for Lectern tests.
+Not a transcript of any recording.
+
+STYLE
+::cue { color: lime; }
+
+REGION
+id:board
+
+opening
+00:00:00.250 --> 00:00:01.500 align:start position:10%
+<v Camille><i>Bonjour</i> &amp; bienvenue.</v>
+
+00:00:01.500 --> 00:00:03.000
+Deux &gt; un.&nbsp;Voilà.
+
+00:00:03.000 --> 00:00:03.500
+<c> </c>

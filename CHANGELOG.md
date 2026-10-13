@@ -5,6 +5,11 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Added timed VTT/SRT sidecar ingestion, including language-tagged filenames and
+  rolling auto-caption de-duplication, with captured caption bytes bound to queue
+  approval. Added optional local faster-whisper ASR via `lectern[asr]`, model and
+  language flags, and additive language/backend transcript metadata.
+
 - Bound local planning and processing to a private captured input, checked
   against existing queue approval before processing. Preserved existing source
   identities, sidecar consent coverage, replay behavior, and original-media

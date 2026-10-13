@@ -92,6 +92,36 @@ providers, and does not claim transcript faithfulness. A user-supplied command
 runs with the user's privileges; Lectern cannot prove that command never opens a
 network connection.
 
+### Caption sidecars and local ASR
+
+With no `--transcriber-command`, ingest reads caption files beside the media:
+`talk.vtt` or `talk.srt`, then language-tagged names such as `talk.fr.vtt` or
+`talk.pt-BR.srt`, before falling back to `talk.transcript.txt`. Exact VTT takes
+precedence over exact SRT; otherwise the alphabetically first language-tagged
+filename is selected. The bundle records the selected caption filename and cue
+times. VTT markup is removed and repeated rolling auto-caption lines are
+de-duplicated.
+
+Without a sidecar, the optional `lectern[asr]` extra provides local
+faster-whisper transcription of normalized audio:
+
+```bash
+uv sync --extra asr
+uv run lectern ingest local-talk.wav --asr-model small --allow-model-download
+```
+
+The default model is multilingual `small`, running on CPU with `int8` compute.
+First run: pass `--allow-model-download` once to let
+[faster-whisper download model weights](https://github.com/SYSTRAN/faster-whisper#model-conversion);
+later runs use the cached model offline. Inference stays local. Both `lectern ingest`
+and `lectern queue ingest` accept `--asr-model NAME`, `--allow-model-download`, and
+optional `--language CODE`. Downloads are disabled by default, and the bundle records
+whether model downloads were allowed.
+Without a language override, ASR auto-detects the language; captions use the
+filename's language tag when present. The bundle records language and ASR backend
+details, including language probability. Captions (including third-party and
+auto-generated captions) and ASR output make no transcript faithfulness claim.
+
 Before planning or processing, Lectern captures a private temporary media copy
 and the sidecar bytes, if present. Queued ingest checks those captured inputs
 against the existing approval before normalization or transcription; planning,

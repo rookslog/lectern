@@ -125,7 +125,8 @@ def _ingest(args: Sequence[str]) -> int:
     if not args or args[0].startswith("-"):
         print(
             "usage: lectern ingest SOURCE [--output DIR] [--state PATH] "
-            "[--transcriber-command COMMAND] [--json]",
+            "[--transcriber-command COMMAND] [--asr-model NAME] "
+            "[--allow-model-download] [--language CODE] [--json]",
             file=sys.stderr,
         )
         return 2
@@ -135,6 +136,9 @@ def _ingest(args: Sequence[str]) -> int:
     state_path = DEFAULT_STATE_PATH
     json_output = False
     transcriber_command: str | None = None
+    asr_model = "small"
+    allow_model_download = False
+    language: str | None = None
     rest = list(args[1:])
     index = 0
     while index < len(rest):
@@ -148,13 +152,23 @@ def _ingest(args: Sequence[str]) -> int:
         elif token == "--transcriber-command" and index + 1 < len(rest):
             transcriber_command = rest[index + 1]
             index += 2
+        elif token == "--asr-model" and index + 1 < len(rest):
+            asr_model = rest[index + 1]
+            index += 2
+        elif token == "--allow-model-download":
+            allow_model_download = True
+            index += 1
+        elif token == "--language" and index + 1 < len(rest):
+            language = rest[index + 1]
+            index += 2
         elif token == "--json":
             json_output = True
             index += 1
         else:
             print(
                 "usage: lectern ingest SOURCE [--output DIR] [--state PATH] "
-                "[--transcriber-command COMMAND] [--json]",
+                "[--transcriber-command COMMAND] [--asr-model NAME] "
+                "[--allow-model-download] [--language CODE] [--json]",
                 file=sys.stderr,
             )
             return 2
@@ -165,6 +179,9 @@ def _ingest(args: Sequence[str]) -> int:
                 source,
                 output_root,
                 transcriber_command=transcriber_command,
+                asr_model=asr_model,
+                allow_model_download=allow_model_download,
+                language=language,
             )
     except IngestError as exc:
         print(f"ingest: {exc}", file=sys.stderr)
@@ -481,6 +498,9 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
     queue_item_id = args[0]
     output_root = Path("bundles")
     transcriber_command: str | None = None
+    asr_model = "small"
+    allow_model_download = False
+    language: str | None = None
     rest = list(args[1:])
     index = 0
     while index < len(rest):
@@ -491,6 +511,15 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
         elif token == "--transcriber-command" and index + 1 < len(rest):
             transcriber_command = rest[index + 1]
             index += 2
+        elif token == "--asr-model" and index + 1 < len(rest):
+            asr_model = rest[index + 1]
+            index += 2
+        elif token == "--allow-model-download":
+            allow_model_download = True
+            index += 1
+        elif token == "--language" and index + 1 < len(rest):
+            language = rest[index + 1]
+            index += 2
         else:
             _queue_usage()
             return 2
@@ -499,6 +528,9 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
             queue_item_id,
             output_root,
             transcriber_command=transcriber_command,
+            asr_model=asr_model,
+            allow_model_download=allow_model_download,
+            language=language,
         )
     if json_output:
         _print_json(
@@ -620,7 +652,8 @@ def _queue_usage() -> None:
     print(
         "usage: lectern queue "
         "{list [--queue-state STATE]|show ITEM|approve ITEM|skip ITEM|retry ITEM|"
-        "ingest ITEM [--output DIR] [--transcriber-command COMMAND]} "
+        "ingest ITEM [--output DIR] [--transcriber-command COMMAND] "
+        "[--asr-model NAME] [--allow-model-download] [--language CODE]} "
         "[--state PATH] [--json]",
         file=sys.stderr,
     )
