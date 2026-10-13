@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 import shlex
+import sqlite3
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from lectern import cli
+from lectern import state as state_module
+from lectern.agent_packet import packet_markdown
 from lectern.automation import open_state
 from lectern.bundle import Manifest, StageName, StageState
 from lectern.ingest import IngestResult
@@ -68,6 +72,9 @@ def test_json_packet_preserves_existing_anchors_and_reports_layers(
         )
         citation = json.loads(capsys.readouterr().out)
         anchor = segment["anchor"]
+        short_id = bundle_id.rsplit("-", 1)[1]
+        assert anchor["short_id"] == short_id
+        assert anchor["cite"] == f"[t={('00:00', '00:01', '1:01:01')[index]} {short_id}#{index}]"
         assert {key: anchor[key] for key in citation["anchor"]} == citation["anchor"]
         assert anchor["selectors"] == [
             {"type": "timecode_range", "start_s": segment["start_s"], "end_s": segment["end_s"]},
@@ -94,7 +101,7 @@ def test_markdown_packet_instructs_agents_and_formats_citations(
     assert cli.main(["export", bundle_id, "--format", "md", "--state", str(state)]) == 0
     output = capsys.readouterr().out
     assert output.startswith(
-        "Cite moments as `[t=MM:SS bundle#seg]`; Lectern verifies these with "
+        "Cite moments as `[t=MM:SS <12hex>#<seg>]`; Lectern verifies these with "
         "`lectern check-citations`.\n"
     )
     assert "experimental" in output
@@ -103,7 +110,24 @@ def test_markdown_packet_instructs_agents_and_formats_citations(
     for index, (token, segment) in enumerate(
         zip(("00:00", "00:01", "1:01:01"), SEGMENTS, strict=True)
     ):
-        assert f"[t={token} {bundle_id}#{index}] {segment['text']}" in output
+        assert f"[t={token} {bundle_id.rsplit('-', 1)[1]}#{index}] {segment['text']}" in output
+    assert cli.main(["export", bundle_id, "--format", "json", "--state", str(state)]) == 0
+    packet = json.loads(capsys.readouterr().out)
+    # JSON evidence stays raw; only the Markdown renderer escapes controls.
+    fields = [
+        (packet["source"], "title"),
+        (packet["source"], "channel"),
+        (packet["layers"]["transcript"], "evidence_limit"),
+        (packet["segments"][0], "text"),
+    ]
+    packet["source"]["external"] = {"url": "https://example.test/\x1b\x00\x85"}
+    for owner, key in fields:
+        owner[key] = "synthetic\x1b\x00\x85\nfield"
+    output = packet_markdown(packet)
+    assert output.count("synthetic\\u001b\\u0000\\u0085\\u000afield") == 4
+    assert "External url: https://example.test/\\u001b\\u0000\\u0085" in output
+    assert not any(ord(c) < 0x20 and c != "\n" or 0x7F <= ord(c) <= 0x9F for c in output)
+    assert packet["segments"][0]["text"] == "synthetic\x1b\x00\x85\nfield"
 
 
 def test_citation_checker_counts_problems_and_uncited_paragraphs(
@@ -111,42 +135,80 @@ def test_citation_checker_counts_problems_and_uncited_paragraphs(
 ) -> None:
     state, result = agent_bundle
     bundle_id = result.manifest.bundle_id
+    short_id = bundle_id.rsplit("-", 1)[1]
     review = tmp_path / "review.md"
     content = (
         "# Review\n\n-\n\n1.\n\n"
         f"Opening [t=00:00 {bundle_id}#0].\n\n"
-        f"Later [t=1:01:01 {bundle_id}#2].\n\n"
+        f"Later [t=1:01:01 {short_id}#2].\n\n"
         f"Wrong time [t=00:02 {bundle_id}#1].\n\n"
         f"Missing segment [t=00:00 {bundle_id}#99].\n\n"
+        f"Impossible time [t=09:99 {short_id}#100].\n\n"
+        f"Invalid hour minutes [t=1:99:01 {short_id}#2].\n\n"
+        f"Invalid segment [t=00:00 {short_id}#nope].\n\n"
         "An unsupported claim.\n"
     )
     review.write_text(content, encoding="utf-8")
     args = ["check-citations", str(review), "--state", str(state)]
-    assert cli.main([*args, "--json"]) == 1
+    with patch(
+        "lectern.state._library_status_from_row",
+        wraps=state_module._library_status_from_row,  # pyright: ignore[reportPrivateUsage]
+    ) as derive_status:
+        assert cli.main([*args, "--json"]) == 1
+        assert derive_status.call_count == 1
     report = json.loads(capsys.readouterr().out)
     assert [item["status"] for item in report["citations"]] == [
         "ok",
         "ok",
         "time_mismatch",
         "unknown_segment",
+        "malformed",
+        "malformed",
+        "malformed",
     ]
-    assert report["ok"] == 2 and report["problems"] == 2
+    assert report["ok"] == 2 and report["problems"] == 5
+    assert report["citations"][1]["bundle_id"] == bundle_id
     assert report["uncited_paragraphs"] == 1
     assert cli.main(args) == 1
     output = capsys.readouterr().out
-    assert len(output.splitlines()) == 3
-    assert output.endswith("citations: 2 ok, 2 problems; uncited paragraphs: 1\n")
+    assert len(output.splitlines()) == 6
+    assert output.endswith("citations: 2 ok, 5 problems; uncited paragraphs: 1\n")
     review.write_text(
-        content.replace(f"00:02 {bundle_id}#1", f"00:01 {bundle_id}#1").replace(
-            f"00:00 {bundle_id}#99", f"00:00 {bundle_id}#0"
-        ),
+        content.replace(f"00:02 {bundle_id}#1", f"00:01 {bundle_id}#1")
+        .replace(f"00:00 {bundle_id}#99", f"00:00 {bundle_id}#0")
+        .replace(f"09:99 {short_id}#100", f"00:00 {short_id}#0")
+        .replace(f"1:99:01 {short_id}#2", f"1:01:01 {short_id}#2")
+        .replace(f"00:00 {short_id}#nope", f"00:00 {short_id}#0"),
         encoding="utf-8",
     )
     assert cli.main(args) == 0
-    assert capsys.readouterr().out == "citations: 4 ok, 0 problems; uncited paragraphs: 1\n"
-    review.write_text("Unknown [t=00:00 missing-bundle#0].", encoding="utf-8")
+    assert capsys.readouterr().out == "citations: 7 ok, 0 problems; uncited paragraphs: 1\n"
+    review.write_text(
+        "Unknown [t=00:00 missing-bundle#0].\n\nUnknown suffix [t=00:00 ffffffffffff#0].",
+        encoding="utf-8",
+    )
     assert cli.main([*args, "--json"]) == 1
-    assert json.loads(capsys.readouterr().out)["citations"][0]["status"] == "unknown_bundle"
+    assert [c["status"] for c in json.loads(capsys.readouterr().out)["citations"]] == [
+        "unknown_bundle",
+        "unknown_bundle",
+    ]
+    # A collision need not have ready evidence: ambiguity is over registered IDs.
+    with sqlite3.connect(state) as connection:
+        connection.execute(
+            """INSERT INTO library_bundles
+               SELECT ?, ?, source_id, source_item_id, queue_item_id, created_at, kind
+               FROM library_bundles WHERE bundle_id = ?""",
+            (f"other-{short_id}", str(tmp_path / "unavailable-bundle"), bundle_id),
+        )
+    review.write_text(
+        f"Ambiguous [t=00:00 {short_id}#0].\n\nFull ID [t=00:00 {bundle_id}#0].",
+        encoding="utf-8",
+    )
+    assert cli.main([*args, "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert [c["status"] for c in report["citations"]] == ["ambiguous_bundle", "ok"]
+    assert report["ok"] == 1 and report["problems"] == 1
+    assert report["uncited_paragraphs"] == 0
 
 
 def test_changed_transcript_invalidates_citation_and_refuses_export(

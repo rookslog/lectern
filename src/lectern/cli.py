@@ -29,6 +29,7 @@ from lectern.evidence import SelectedEvidence
 from lectern.ingest import IngestError
 from lectern.migrations import MigrationError, migrate_bundle
 from lectern.readable import format_time, source_details
+from lectern.readable import plain_field as _plain_search_field
 from lectern.records import redact_paths
 
 # Commands that return stored data to a caller, and therefore must emit no
@@ -870,17 +871,6 @@ def _queue_usage() -> None:
         "[--asr-model NAME] [--allow-model-download] [--language CODE]} "
         "[--state PATH] [--json]",
         file=sys.stderr,
-    )
-
-
-def _plain_search_field(value: str) -> str:
-    """Keep one search field on one terminal row without changing its evidence."""
-
-    return "".join(
-        f"\\u{ord(character):04x}"
-        if ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F or character in "\u2028\u2029"
-        else character
-        for character in value
     )
 
 

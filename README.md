@@ -220,14 +220,19 @@ uv run lectern check-citations review.md --state PATH
 uv run lectern check-citations review.md --state PATH --json
 ```
 
-Cite moments as `[t=MM:SS bundle#seg]` (use `H:MM:SS` past an hour), for example
-`[t=00:01 synthetic-talk#1]`. Each packet anchor preserves Lectern's content hash
-and canonicalization version and adds time-range and exact-quote selectors.
+Cite moments as `[t=MM:SS <12hex>#<seg>]` (use `H:MM:SS` past an hour), for example
+`[t=00:01 a1b2c3d4e5f6#1]`. The short ID is the bundle ID's final 12-hex suffix;
+the checker resolves it only when it uniquely matches a registered bundle.
+Full bundle ID tokens remain accepted. Each packet anchor keeps the full
+`bundle_id`, adds `short_id` and a short-form `cite`, preserves Lectern's content
+hash and canonicalization version, and adds time-range and exact-quote selectors.
 Displayed text and quotes are path-redacted; hashes still refer to original
 evidence, so a redacted quote need not hash to the anchor's digest.
 
-The checker reports `ok`, `time_mismatch`, `unknown_bundle`, `unknown_segment`,
-or `not_ready` for each token against current strict registered evidence. Times
+The checker reports `ok`, `time_mismatch`, `unknown_bundle`, `ambiguous_bundle`,
+`unknown_segment`, `not_ready`, or `malformed` for each token against current
+strict registered evidence. Citation-like tokens with invalid times or segment
+numbers count as problems, not uncited paragraphs. Times
 must match the segment start's whole second. It exits 1 for problem tokens and
 0 otherwise; uncited paragraphs are counted but do not fail the check. This
 checks references, not whether a claim is supported or whether every claim is

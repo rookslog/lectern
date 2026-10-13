@@ -8,18 +8,21 @@ from typing import Any
 
 from lectern.bundle import StageName, StageState
 from lectern.evidence import read_transcript_metadata
-from lectern.readable import format_time
+from lectern.readable import format_time, plain_field
 from lectern.records import AutomationError, LibraryStatus, redact_paths
 from lectern.search import AnchorResolution, make_anchor, resolve_against_segments
 from lectern.state import AutomationStateStore
 
 CITATION_INSTRUCTION = (
-    "Cite moments as `[t=MM:SS bundle#seg]`; Lectern verifies these with `lectern check-citations`."
+    "Cite moments as `[t=MM:SS <12hex>#<seg>]`; Lectern verifies these with "
+    "`lectern check-citations`."
 )
+_SHORT_ID = re.compile(r"[0-9a-f]{12}")
 _CITATION = re.compile(
-    r"\[t=(?P<time>(?:[0-9]+:)?[0-9]{2}:[0-5][0-9]) "
+    r"\[t=(?P<time>(?:[0-9]+:)?[0-5][0-9]:[0-5][0-9]) "
     r"(?P<bundle>[^\s\[\]#]+)#(?P<segment>[0-9]+)\]"
 )
+_CITATION_LIKE = re.compile(r"\[t=[^\[\]\r\n]*#[^\[\]\r\n]*\]")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
 _LIST_MARKER = re.compile(r"^\s*(?:[-+*]|[0-9]+[.)])\s*$")
 _SETEXT = re.compile(r"^\s*(?:=+|-+)\s*$")
@@ -29,6 +32,7 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
     """Export only registered ready evidence; keep hashes over the original text."""
 
     evidence = state.get_library_evidence(bundle_id, require_ready=True)
+    short_id = bundle_id.rsplit("-", 1)[-1]
     bundle = state.get_library_bundle(bundle_id)
     manifest = state.get_library_manifest(bundle_id)
     metadata = read_transcript_metadata(Path(bundle.bundle_path), manifest, evidence.source)
@@ -74,6 +78,7 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
                 "anchor": {
                     **anchor.to_dict(),
                     "bundle_id": redact_paths(bundle_id),
+                    "short_id": short_id,
                     "selectors": [
                         {
                             "type": "timecode_range",
@@ -82,7 +87,7 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
                         },
                         {"type": "quote", "exact": redact_paths(segment.text)},
                     ],
-                    "cite": redact_paths(f"{anchor.rendered()[:-1]} {bundle_id}#{segment.id}]"),
+                    "cite": redact_paths(f"{anchor.rendered()[:-1]} {short_id}#{segment.id}]"),
                 },
             }
         )
@@ -131,16 +136,51 @@ def packet_markdown(packet: dict[str, Any]) -> str:
     for segment in packet["segments"]:
         lines.append(f"{segment['anchor']['cite']} {segment['text']}")
     # Evidence may contain controls/newlines; keep each field on its own row.
-    return "\n".join(" ".join(str(line).split()) for line in lines)
+    return "\n".join(" ".join(plain_field(str(line)).split()) for line in lines)
 
 
 def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:
     """Short tokens name current segments, not a historical content-hash snapshot."""
 
     cache: dict[str, tuple[str | None, list[dict[str, Any]]]] = {}
+    suffixes: dict[str, list[str]] | None = None
     citations: list[dict[str, Any]] = []
-    for match in _CITATION.finditer(text):
+    for token in _CITATION_LIKE.finditer(text):
+        match = _CITATION.fullmatch(token[0])
+        if match is None:
+            citations.append(
+                {
+                    "token": redact_paths(token[0]),
+                    "bundle_id": None,
+                    "segment_id": None,
+                    "time": None,
+                    "expected_time": None,
+                    "status": "malformed",
+                }
+            )
+            continue
         bundle_id = match["bundle"]
+        if _SHORT_ID.fullmatch(bundle_id):
+            if suffixes is None:
+                suffixes = {}
+                for registered_id in state.list_registered_bundle_ids():
+                    suffix = registered_id.rsplit("-", 1)[-1]
+                    suffixes.setdefault(suffix, []).append(registered_id)
+            candidates = suffixes.get(bundle_id, [])
+            if len(candidates) == 1:
+                bundle_id = candidates[0]
+            else:
+                citations.append(
+                    {
+                        "token": redact_paths(match[0]),
+                        "bundle_id": bundle_id,
+                        "segment_id": int(match["segment"]),
+                        "time": match["time"],
+                        "expected_time": None,
+                        "status": "ambiguous_bundle" if candidates else "unknown_bundle",
+                    }
+                )
+                continue
         if bundle_id not in cache:
             try:
                 bundle = state.get_library_bundle(bundle_id)
@@ -151,7 +191,7 @@ def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:
                     if bundle.status is not LibraryStatus.READY:
                         cache[bundle_id] = ("not_ready", [])
                     else:
-                        evidence = state.get_library_evidence(bundle_id, require_ready=True)
+                        evidence = state.get_registered_evidence(bundle_id)
                         cache[bundle_id] = (
                             None,
                             [s.model_dump(mode="json") for s in evidence.segments.root],
@@ -189,7 +229,7 @@ def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:
     uncited = 0
     for paragraph in re.split(r"\n\s*\n", text):
         lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
-        if not lines or _CITATION.search(paragraph):
+        if not lines or _CITATION_LIKE.search(paragraph):
             continue
         if len(lines) == 2 and _SETEXT.fullmatch(lines[1]):
             continue
