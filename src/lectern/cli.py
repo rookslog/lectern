@@ -809,7 +809,7 @@ def _check_citations(args: Sequence[str]) -> int:
     else:
         for citation in report["citations"]:
             if citation["status"] != "ok":
-                print(f"{citation['token']}: {citation['status']}")
+                print(f"{_plain_search_field(citation['token'])}: {citation['status']}")
         print(
             f"citations: {report['ok']} ok, {report['problems']} problems; "
             f"uncited paragraphs: {report['uncited_paragraphs']}"
