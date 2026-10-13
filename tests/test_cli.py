@@ -198,9 +198,9 @@ def test_ingest_command_accepts_local_transcriber_command_json(
     source_json = json.loads((bundle_dir / "source.json").read_text(encoding="utf-8"))
     assert payload["bundle_id"]
     assert source_json["transcript"]["method"] == "local_command_json"
-    assert "[t=00:03] CLI transcript." in (bundle_dir / "analysis" / "summary.md").read_text(
-        encoding="utf-8"
-    )
+    overview = (bundle_dir / "analysis" / "summary.md").read_text(encoding="utf-8")
+    assert "Transcript method: local_command_json" in overview
+    assert "CLI transcript." not in overview
 
 
 def test_ingest_usage_error_mentions_transcriber_command(

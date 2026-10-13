@@ -33,6 +33,7 @@ from lectern.bundle import (
     StageRecord,
     StageState,
 )
+from lectern.readable import format_time
 from lectern.records import AutomationError, approval_digest
 from lectern.sources.local import transcript_sidecar_path
 
@@ -200,7 +201,7 @@ class PreparedLocalIngest:
             )
 
             summary_path = temp_root / "analysis" / "summary.md"
-            summary_path.write_text(_summary_lite(transcript), encoding="utf-8")
+            summary_path.write_text(_summary_lite(transcript, manifest.source), encoding="utf-8")
             manifest.stages[StageName.SYNTHESIZE] = _done_stage(temp_root, [summary_path])
 
             manifest.save(temp_root)
@@ -593,27 +594,24 @@ def _wav_duration_seconds(path: Path) -> float | None:
         raise IngestError(f"normalized audio is not readable WAV: {path}") from exc
 
 
-def _summary_lite(transcript: TranscriptResult) -> str:
-    first_segment = transcript.segments[0]
-    normalized = " ".join(first_segment.text.split())
-    first_sentence = normalized.split(". ", maxsplit=1)[0].rstrip(".") + "."
-    word_count = len(" ".join(segment.text for segment in transcript.segments).split())
-    return (
-        "# Summary\n\n"
-        f"[t={_format_timestamp(first_segment.start_s)}] {first_sentence}\n\n"
-        f"Words: {word_count}\n\n"
-        f"Transcript method: {transcript.method}. "
-        "Summary is an extractive lead with timestamp provenance, not a faithfulness claim.\n"
+def _summary_lite(transcript: TranscriptResult, source: Source) -> str:
+    word_count = sum(len(segment.text.split()) for segment in transcript.segments)
+    start = min(segment.start_s for segment in transcript.segments)
+    end = (
+        max(segment.end_s for segment in transcript.segments if segment.end_s is not None)
+        if all(segment.end_s is not None for segment in transcript.segments)
+        else None
     )
-
-
-def _format_timestamp(seconds: float) -> str:
-    total_seconds = max(0, int(seconds))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds_part = divmod(remainder, 60)
-    if hours:
-        return f"{hours:02d}:{minutes:02d}:{seconds_part:02d}"
-    return f"{minutes:02d}:{seconds_part:02d}"
+    return (
+        f"# {source.title or 'Untitled talk'}\n\n"
+        f"Duration: {format_time(source.duration_s, duration=True)}\n"
+        f"Transcript method: {transcript.method}\n"
+        f"Segments: {len(transcript.segments)}\n"
+        f"Words: {word_count}\n"
+        f"Time span: {format_time(start)}–{format_time(end)}\n\n"
+        "Lectern does not summarize. Read the transcript with `lectern transcript <bundle-id>` "
+        "or hand it to an agent.\n"
+    )
 
 
 def _transcript_metadata(

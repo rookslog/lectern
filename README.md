@@ -114,9 +114,31 @@ uv run lectern queue ingest <queue-item-id>
 uv run lectern library list
 ```
 
-Plain `library list` and `library show <bundle-id>` rows contain three tab-separated
-fields: bundle ID, creation time, and status (`ready`, `incomplete`, `failed`, or
-`needs-reprocessing`).
+Plain `library list` rows contain four tab-separated fields: bundle ID, creation
+time, status (`ready`, `incomplete`, `failed`, or `needs-reprocessing`), and title.
+The first three fields retain their order; the JSON listing is unchanged.
+`library show <bundle-id>` prints a readable overview with title, status, creation
+time, recorded source kind, duration, transcript method, segment and word counts,
+layer availability from manifest stage states, and the redacted bundle directory.
+Its `--json` output keeps `bundle` and `manifest` and adds these overview fields.
+Transcript facts that cannot be read through strict evidence checks are shown as
+unknown (null in JSON); inspection remains available for non-ready bundles.
+
+`analysis/summary.md` is an overview card, not a summary: it records the title,
+duration, transcript method, segment and word counts, and segment time span.
+Lectern does not summarize. Agents write summaries using Lectern's anchors.
+Read a ready bundle's transcript with:
+
+```bash
+uv run lectern transcript <bundle-id> --state PATH
+uv run lectern transcript <bundle-id> --format txt --state PATH
+uv run lectern transcript <bundle-id> --format json --state PATH
+```
+
+The default Markdown output includes a title heading and timestamped paragraphs
+such as `[03:12] (#14) text`; `txt` omits the heading. Times use `[h:mm:ss]`
+past an hour. JSON includes `bundle_id`, `title`, and segments with `id`, `start_s`,
+`end_s`, and `text`. The command refuses non-ready bundles.
 
 Use `--json` on source, queue, and library commands for machine-readable output.
 
@@ -172,6 +194,11 @@ unsupported` to inspect them.
 literal by default; pass `--operators` only when you intentionally want SQLite
 FTS operators. When literal query text contains option-like tokens such as
 `--json`, put a standalone `--` before the query.
+Plain search hits contain four tab-separated fields: bundle ID, segment ID,
+`[mm:ss]` (or `[h:mm:ss]` past an hour), and snippet. JSON hits include `start_s`
+and `title` alongside the existing bundle ID, segment ID, and snippet. These
+added facts use strict registered transcript evidence; unavailable facts are
+null in JSON and an unavailable time is `[unknown]` in plain output.
 `lectern library cite BUNDLE_ID SEGMENT_ID --state PATH` returns
 an anchor tied to the cited transcript content. An `exact` resolution means the
 segment ID and content digest agree; it does not establish that the timestamp is

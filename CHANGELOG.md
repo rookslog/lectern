@@ -5,6 +5,17 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Replaced the extracted first-sentence summary with an honest overview card at
+  `analysis/summary.md`, retaining its artifact path, stage, and manifest shape.
+  Lectern does not summarize; agents write summaries citing Lectern's anchors.
+- Added `lectern transcript BUNDLE_ID` with timestamped Markdown, text, and JSON
+  views of ready bundles through strict registered evidence readers.
+- Expanded `library show` into a readable overview and additive JSON fields;
+  appended title to plain `library list` rows without changing JSON listings.
+- Added segment time and talk title to search-hit JSON, and a timestamp field
+  between segment ID and snippet in plain search output. Search matching and
+  ranking are unchanged.
+
 - Bound local planning and processing to a private captured input, checked
   against existing queue approval before processing. Preserved existing source
   identities, sidecar consent coverage, replay behavior, and original-media
@@ -26,8 +37,7 @@ versioned release notes will become stricter once preview support stabilizes.
   `lectern migrate BUNDLE` procedure with a retained `0.1.0` backup.
 - Added local command transcription support for media without a transcript
   sidecar.
-- Added transcript method metadata, timestamped transcript artifacts, and
-  timestamp-derived summary anchors.
+- Added transcript method metadata and timestamped transcript artifacts.
 - Added local automation spine commands for folder sources, queue operations,
   and minimal library inspection.
 - Added public preview documentation for privacy, roadmap, support, and

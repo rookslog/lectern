@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, NoReturn, Self, cast
 
 from lectern.bundle import Manifest, SourceDocument, StageState, TranscriptSegmentsDocument
-from lectern.evidence import read_selected_evidence
+from lectern.evidence import SelectedEvidence, read_selected_evidence
 from lectern.records import (
     LEGAL_QUEUE_TRANSITION_SOURCE_VALUES,
     LEGAL_QUEUE_TRANSITION_SOURCES,
@@ -502,6 +502,33 @@ class AutomationStateStore:
         if row is None:
             raise AutomationError(f"bundle not found in library: {bundle_id}")
         return _library_bundle_from_row(row, status=_library_status_from_row(row))
+
+    def get_library_manifest(self, bundle_id: str) -> Manifest:
+        """Load the manifest belonging to the registered bundle, not an arbitrary path."""
+
+        bundle = self.get_library_bundle(bundle_id)
+        try:
+            return _load_registered_manifest(bundle_id, Path(bundle.bundle_path))
+        except (ValueError, RecursionError) as exc:
+            raise AutomationError(str(exc)) from exc
+
+    def get_library_evidence(
+        self, bundle_id: str, *, require_ready: bool = False
+    ) -> SelectedEvidence:
+        """Read declared, integrity-checked evidence with the registered identity policy."""
+
+        bundle = self.get_library_bundle(bundle_id)
+        if require_ready and bundle.status is not LibraryStatus.READY:
+            raise AutomationError(f"bundle {bundle_id} is {bundle.status.value}; requires ready")
+        try:
+            manifest = _load_registered_manifest(bundle_id, Path(bundle.bundle_path))
+            evidence = read_selected_evidence(
+                Path(bundle.bundle_path), manifest, require_manifest_integrity=True
+            )
+            _assert_registered_source_identity(evidence.source, manifest)
+            return evidence
+        except (ValueError, RecursionError) as exc:
+            raise AutomationError(str(exc)) from exc
 
     def _migrate(self) -> None:
         version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])

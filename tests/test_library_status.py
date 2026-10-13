@@ -287,12 +287,19 @@ def test_plain_library_rows_include_actual_status_and_preserve_json(
     assert cli.main(args) == 0
     plain = capsys.readouterr()
     assert plain.err == ""
-    assert plain.out == f"{bundle_id}\t{bundle.created_at}\t{status}\n"
+    if command == "list":
+        assert plain.out == f"{bundle_id}\t{bundle.created_at}\t{status}\tSynthetic Talk\n"
+    else:
+        assert f"Bundle: {bundle_id}\n" in plain.out
+        assert f"Created: {bundle.created_at}\n" in plain.out
+        assert f"Status: {status}\n" in plain.out
     assert cli.main([*args, "--json"]) == 0
     structured = capsys.readouterr()
     assert structured.err == ""
-    assert json.loads(structured.out) == (
-        {"bundles": [expected_bundle]}
-        if command == "list"
-        else {"bundle": expected_bundle, "manifest": expected_manifest}
-    )
+    payload = json.loads(structured.out)
+    if command == "list":
+        assert payload == {"bundles": [expected_bundle]}
+    else:
+        assert payload["bundle"] == expected_bundle
+        assert payload["manifest"] == expected_manifest
+        assert payload["status"] == status
