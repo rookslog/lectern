@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from lectern.bundle import StageName, StageState
-from lectern.evidence import read_transcript_metadata
+from lectern.evidence import read_frames, read_transcript_metadata
+from lectern.keyframes import FRAME_EVIDENCE_LIMIT, FRAME_METHOD
 from lectern.readable import format_time, plain_field
 from lectern.records import AutomationError, LibraryStatus, redact_paths
 from lectern.search import AnchorResolution, make_anchor, resolve_against_segments
@@ -20,7 +21,7 @@ CITATION_INSTRUCTION = (
 _SHORT_ID = re.compile(r"[0-9a-f]{12}")
 _CITATION = re.compile(
     r"\[t=(?P<time>(?:[0-9]+:)?[0-5][0-9]:[0-5][0-9]) "
-    r"(?P<bundle>[^\s\[\]#]+)#(?P<segment>[0-9]+)\]"
+    r"(?P<bundle>[^\s\[\]#]+)#(?P<frame>f)?(?P<segment>[0-9]+)\]"
 )
 _CITATION_LIKE = re.compile(r"\[t=[^\[\]\r\n]*#[^\[\]\r\n]*\]")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
@@ -36,6 +37,7 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
     bundle = state.get_library_bundle(bundle_id)
     manifest = state.get_library_manifest(bundle_id)
     metadata = read_transcript_metadata(Path(bundle.bundle_path), manifest, evidence.source)
+    visual = read_frames(Path(bundle.bundle_path), manifest)
     source = evidence.source.source
     source_facts = source.model_dump(
         mode="json", include={"title", "channel", "published", "duration_s", "external"}
@@ -63,8 +65,19 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
         layers[name] = {"present": present}
         if not present:
             layers[name]["reason"] = (
-                "not processed" if record.state is StageState.PENDING else record.state.value
+                redact_paths(record.warnings[0])
+                if name == "visual" and record.warnings
+                else "not processed"
+                if record.state is StageState.PENDING
+                else record.state.value
             )
+    if visual is not None:
+        layers["visual"] = {
+            "present": True,
+            "frame_count": len(visual.root),
+            "method": FRAME_METHOD,
+            "evidence_limit": FRAME_EVIDENCE_LIMIT,
+        }
     # No translation stage or translation artifact is defined by the current schema.
     # ENRICH is not evidence of translation and must not be used as a proxy for it.
     layers["translation"] = {"present": False, "reason": "not processed"}
@@ -99,6 +112,18 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
         "source": source_facts,
         "layers": layers,
         "segments": segments,
+        "frames": []
+        if visual is None
+        else [
+            {
+                "index": frame.index,
+                "t_s": frame.t_s,
+                "file": frame.file,
+                "reason": frame.reason,
+                "cite": f"[t={format_time(frame.t_s)} {short_id}#f{frame.index}]",
+            }
+            for frame in visual.root
+        ],
     }
 
 
@@ -131,18 +156,40 @@ def packet_markdown(packet: dict[str, Any]) -> str:
                 f"; method: {layer['method']}; language: {layer['language'] or 'unknown'}"
                 f"; segments: {layer['segment_count']}; evidence limit: {layer['evidence_limit']}"
             )
+        elif name == "visual" and layer["present"]:
+            description += (
+                f"; frames: {layer['frame_count']}; method: {layer['method']}"
+                f"; evidence limit: {layer['evidence_limit']}"
+            )
         lines.append(f"- {name}: {description}")
     lines.extend(["", "## Segments", ""])
     for segment in packet["segments"]:
         lines.append(f"{segment['anchor']['cite']} {segment['text']}")
+    if packet.get("frames"):
+        lines.extend(
+            [
+                "",
+                "## Frames",
+                "",
+                "Paths below are relative to visual/ in the bundle. "
+                "Frame citations use #f<index>: `[t=MM:SS <12hex>#f<index>]`.",
+                "",
+            ]
+        )
+        for frame in packet["frames"]:
+            path = frame["file"].removeprefix("visual/")
+            lines.append(
+                f"[t={format_time(frame['t_s'])}] {path} ({frame['reason']}); "
+                f"index {frame['index']}; cite {frame['cite']}"
+            )
     # Evidence may contain controls/newlines; keep each field on its own row.
     return "\n".join(" ".join(plain_field(str(line)).split()) for line in lines)
 
 
 def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:
-    """Short tokens name current segments, not a historical content-hash snapshot."""
+    """Short tokens name current segments/frames, not historical snapshots."""
 
-    cache: dict[str, tuple[str | None, list[dict[str, Any]]]] = {}
+    cache: dict[tuple[str, bool], tuple[str | None, list[dict[str, Any]]]] = {}
     suffixes: dict[str, list[str]] | None = None
     citations: list[dict[str, Any]] = []
     for token in _CITATION_LIKE.finditer(text):
@@ -160,6 +207,8 @@ def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:
             )
             continue
         bundle_id = match["bundle"]
+        is_frame = match["frame"] is not None
+        identifier_field = "frame_index" if is_frame else "segment_id"
         if _SHORT_ID.fullmatch(bundle_id):
             if suffixes is None:
                 suffixes = {}
@@ -174,37 +223,55 @@ def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:
                     {
                         "token": redact_paths(match[0]),
                         "bundle_id": bundle_id,
-                        "segment_id": int(match["segment"]),
+                        identifier_field: int(match["segment"]),
                         "time": match["time"],
                         "expected_time": None,
                         "status": "ambiguous_bundle" if candidates else "unknown_bundle",
                     }
                 )
                 continue
-        if bundle_id not in cache:
+        cache_key = bundle_id, is_frame
+        if cache_key not in cache:
             try:
                 bundle = state.get_library_bundle(bundle_id)
             except AutomationError:
-                cache[bundle_id] = ("unknown_bundle", [])
+                cache[cache_key] = ("unknown_bundle", [])
             else:
                 try:
                     if bundle.status is not LibraryStatus.READY:
-                        cache[bundle_id] = ("not_ready", [])
+                        cache[cache_key] = ("not_ready", [])
                     else:
-                        evidence = state.get_registered_evidence(bundle_id)
-                        cache[bundle_id] = (
-                            None,
-                            [s.model_dump(mode="json") for s in evidence.segments.root],
-                        )
-                except (AutomationError, OSError):
-                    cache[bundle_id] = ("not_ready", [])
-        status, segments = cache[bundle_id]
+                        if is_frame:
+                            frames = read_frames(
+                                Path(bundle.bundle_path), state.get_library_manifest(bundle_id)
+                            )
+                            cache[cache_key] = (
+                                None,
+                                []
+                                if frames is None
+                                else [{"id": f.index, "start_s": f.t_s} for f in frames.root],
+                            )
+                        else:
+                            evidence = state.get_registered_evidence(bundle_id)
+                            cache[cache_key] = (
+                                None,
+                                [s.model_dump(mode="json") for s in evidence.segments.root],
+                            )
+                except (AutomationError, OSError, ValueError):
+                    cache[cache_key] = ("not_ready", [])
+        status, segments = cache[cache_key]
         segment_id = int(match["segment"])
         segment = next((s for s in segments if s["id"] == segment_id), None)
         expected_time = None
         if status is None:
             if segment is None:
-                status = "unknown_segment"
+                status = "unknown_frame" if is_frame else "unknown_segment"
+            elif is_frame:
+                expected_time = format_time(segment["start_s"])
+                displayed_s = 0
+                for part in match["time"].split(":"):
+                    displayed_s = displayed_s * 60 + int(part)
+                status = "ok" if displayed_s == int(segment["start_s"]) else "time_mismatch"
             else:
                 anchor = make_anchor(bundle_id, segment_id, segment["start_s"], segment["text"])
                 resolved = resolve_against_segments(anchor, segments)
@@ -220,7 +287,7 @@ def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:
             {
                 "token": redact_paths(match[0]),
                 "bundle_id": redact_paths(bundle_id),
-                "segment_id": segment_id,
+                identifier_field: segment_id,
                 "time": match["time"],
                 "expected_time": expected_time,
                 "status": status,

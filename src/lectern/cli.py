@@ -25,8 +25,14 @@ from lectern.automation import (
     preflight_youtube_playlist,
 )
 from lectern.bundle import StageName, StageState, export_artifact_schemas, export_json_schema
-from lectern.evidence import SelectedEvidence
+from lectern.evidence import SelectedEvidence, read_frames
 from lectern.ingest import IngestError
+from lectern.keyframes import (
+    DEFAULT_FRAME_INTERVAL,
+    DEFAULT_MAX_FRAMES,
+    KeyframeError,
+    validate_frame_options,
+)
 from lectern.migrations import MigrationError, migrate_bundle
 from lectern.readable import format_time, source_details
 from lectern.readable import plain_field as _plain_search_field
@@ -136,7 +142,8 @@ def _ingest(args: Sequence[str]) -> int:
         print(
             "usage: lectern ingest SOURCE [--output DIR] [--state PATH] "
             "[--transcriber-command COMMAND] [--asr-model NAME] "
-            "[--allow-model-download] [--language CODE] [--json]",
+            "[--allow-model-download] [--language CODE] [--frames] "
+            "[--frame-interval SECONDS] [--max-frames N] [--json]",
             file=sys.stderr,
         )
         return 2
@@ -149,6 +156,9 @@ def _ingest(args: Sequence[str]) -> int:
     asr_model = "small"
     allow_model_download = False
     language: str | None = None
+    frames = False
+    frame_interval = DEFAULT_FRAME_INTERVAL
+    max_frames = DEFAULT_MAX_FRAMES
     rest = list(args[1:])
     index = 0
     while index < len(rest):
@@ -165,6 +175,20 @@ def _ingest(args: Sequence[str]) -> int:
         elif token == "--asr-model" and index + 1 < len(rest):
             asr_model = rest[index + 1]
             index += 2
+        elif token == "--frames":
+            frames = True
+            index += 1
+        elif token in ("--frame-interval", "--max-frames") and index + 1 < len(rest):
+            try:
+                if token == "--frame-interval":
+                    frame_interval = float(rest[index + 1])
+                else:
+                    max_frames = int(rest[index + 1])
+                validate_frame_options(frame_interval, max_frames)
+            except (ValueError, KeyframeError) as exc:
+                print(f"ingest: invalid {token}: {exc}", file=sys.stderr)
+                return 2
+            index += 2
         elif token == "--allow-model-download":
             allow_model_download = True
             index += 1
@@ -178,7 +202,8 @@ def _ingest(args: Sequence[str]) -> int:
             print(
                 "usage: lectern ingest SOURCE [--output DIR] [--state PATH] "
                 "[--transcriber-command COMMAND] [--asr-model NAME] "
-                "[--allow-model-download] [--language CODE] [--json]",
+                "[--allow-model-download] [--language CODE] [--frames] "
+                "[--frame-interval SECONDS] [--max-frames N] [--json]",
                 file=sys.stderr,
             )
             return 2
@@ -192,6 +217,9 @@ def _ingest(args: Sequence[str]) -> int:
                 asr_model=asr_model,
                 allow_model_download=allow_model_download,
                 language=language,
+                frames=frames,
+                frame_interval=frame_interval,
+                max_frames=max_frames,
             )
     except IngestError as exc:
         print(f"ingest: {exc}", file=sys.stderr)
@@ -511,6 +539,9 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
     asr_model = "small"
     allow_model_download = False
     language: str | None = None
+    frames = False
+    frame_interval = DEFAULT_FRAME_INTERVAL
+    max_frames = DEFAULT_MAX_FRAMES
     rest = list(args[1:])
     index = 0
     while index < len(rest):
@@ -523,6 +554,20 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
             index += 2
         elif token == "--asr-model" and index + 1 < len(rest):
             asr_model = rest[index + 1]
+            index += 2
+        elif token == "--frames":
+            frames = True
+            index += 1
+        elif token in ("--frame-interval", "--max-frames") and index + 1 < len(rest):
+            try:
+                if token == "--frame-interval":
+                    frame_interval = float(rest[index + 1])
+                else:
+                    max_frames = int(rest[index + 1])
+                validate_frame_options(frame_interval, max_frames)
+            except (ValueError, KeyframeError) as exc:
+                print(f"ingest: invalid {token}: {exc}", file=sys.stderr)
+                return 2
             index += 2
         elif token == "--allow-model-download":
             allow_model_download = True
@@ -541,6 +586,9 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
             asr_model=asr_model,
             allow_model_download=allow_model_download,
             language=language,
+            frames=frames,
+            frame_interval=frame_interval,
+            max_frames=max_frames,
         )
     if json_output:
         _print_json(
@@ -650,6 +698,11 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
             # derive transcript facts from evidence that failed strict checks.
             evidence = None
         source_kind = state.get_source(bundle.source_id).kind.value
+    try:
+        frames_document = read_frames(Path(bundle.bundle_path), manifest)
+    except (ValueError, OSError):
+        frames_document = None
+    frame_count = None if frames_document is None else len(frames_document.root)
     segments = None if evidence is None else evidence.segments.root
     layers = {
         "transcript": manifest.stages[StageName.TRANSCRIBE].state is StageState.DONE,
@@ -674,6 +727,7 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
         "transcript_method": None if evidence is None else evidence.source.transcript.method,
         "segment_count": None if segments is None else len(segments),
         "word_count": None if segments is None else sum(len(s.text.split()) for s in segments),
+        "frame_count": frame_count,
         "layers": layers,
         "bundle_dir": redact_paths(bundle.bundle_path),
     }
@@ -686,6 +740,11 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
             for key, value in source_details(manifest.source).items()
             if value is not None
         )
+        visual_description = "no"
+        if layers["visual"]:
+            visual_description = (
+                f"yes ({frame_count} frames)" if frame_count is not None else "yes (frames unknown)"
+            )
         print(
             f"Bundle: {bundle.bundle_id}\n"
             f"Title: {_plain_search_field(title)}\n"
@@ -698,7 +757,7 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
             f"Segments: {payload['segment_count'] if segments is not None else 'unknown'}\n"
             f"Words: {payload['word_count'] if segments is not None else 'unknown'}\n"
             f"Transcript: {'yes' if layers['transcript'] else 'no'}\n"
-            f"Visual: {'yes' if layers['visual'] else 'no'}\n"
+            f"Visual: {visual_description}\n"
             f"Bundle directory: {payload['bundle_dir']}"
         )
     return 0
@@ -868,7 +927,8 @@ def _queue_usage() -> None:
         "usage: lectern queue "
         "{list [--queue-state STATE]|show ITEM|approve ITEM|skip ITEM|retry ITEM|"
         "ingest ITEM [--output DIR] [--transcriber-command COMMAND] "
-        "[--asr-model NAME] [--allow-model-download] [--language CODE]} "
+        "[--asr-model NAME] [--allow-model-download] [--language CODE] "
+        "[--frames] [--frame-interval SECONDS] [--max-frames N]} "
         "[--state PATH] [--json]",
         file=sys.stderr,
     )

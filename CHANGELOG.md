@@ -5,6 +5,11 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Added opt-in `--frames` for one-shot and queued ingest: local scene/interval
+  JPEG samples, perceptual deduplication, timestamped `visual/frames.json`, and
+  manifest-covered images. Interval/max options bind visual bundle identity.
+  Agent packets expose frame limits and `#f<index>` citations; citation checks
+  resolve them and `library show` reports the frame count. No OCR is included.
 - Added experimental `lectern export BUNDLE_ID` JSON/Markdown talk packets with
   source facts, layer limits, and existing content-hash anchors extended with
   time-range and quote selectors. Added `lectern check-citations FILE` for

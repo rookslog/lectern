@@ -35,6 +35,14 @@ from lectern.bundle import (
     StageRecord,
     StageState,
 )
+from lectern.keyframes import (
+    DEFAULT_FRAME_INTERVAL,
+    DEFAULT_MAX_FRAMES,
+    FRAME_METHOD,
+    KeyframeError,
+    extract_frames,
+    validate_frame_options,
+)
 from lectern.readable import format_time, source_details
 from lectern.records import AutomationError, approval_digest
 from lectern.sources.local import (
@@ -134,6 +142,9 @@ class PreparedLocalIngest:
     _asr_model: str
     _allow_model_download: bool
     _language: str | None
+    _frames: bool
+    _frame_interval: float
+    _max_frames: int
 
     def planned_bundle_id(self) -> str | None:
         if self._command is not None or self._sidecar_payload is None:
@@ -151,6 +162,16 @@ class PreparedLocalIngest:
         components = [self.media_sha256, transcript.identity_component]
         if self._info_payload is not None:
             components.append(hashlib.sha256(self._info_payload).hexdigest())
+        # Preserve unrequested legacy identities, as with an absent language
+        # override. Opt-in visual processing binds the method and both limits.
+        if self._frames:
+            options = {
+                "frames": True,
+                "method": FRAME_METHOD,
+                "interval": self._frame_interval,
+                "max_frames": self._max_frames,
+            }
+            components.append(json.dumps(options, sort_keys=True, separators=(",", ":")))
         return _combined_digest(*components)
 
     def ingest(self, output_root: Path) -> IngestResult:
@@ -181,6 +202,18 @@ class PreparedLocalIngest:
                     allow_model_download=self._allow_model_download,
                 )
             transcript = _with_language(transcript, self._language)
+
+            frames = None
+            if self._frames:
+                try:
+                    frames = extract_frames(
+                        self._media_path,
+                        temp_root,
+                        interval=self._frame_interval,
+                        maximum=self._max_frames,
+                    )
+                except KeyframeError as exc:
+                    raise IngestError(str(exc)) from exc
 
             current_source_digest, current_source_size = _digest_and_size(source)
             if (current_source_digest, current_source_size) != (source_digest, source_size):
@@ -245,6 +278,24 @@ class PreparedLocalIngest:
                 [segments_path, transcript_path, metadata_path],
             )
 
+            if self._frames:
+                if frames is None:
+                    manifest.stages[StageName.VISUAL] = StageRecord(
+                        state=StageState.SKIPPED, warnings=["no video stream"]
+                    )
+                else:
+                    manifest.stages[StageName.VISUAL] = _done_stage(
+                        temp_root,
+                        [
+                            temp_root / "visual/frames.json",
+                            *(temp_root / f.file for f in frames.root),
+                        ],
+                    )
+            else:
+                manifest.stages[StageName.VISUAL] = StageRecord(
+                    state=StageState.SKIPPED, warnings=["not requested"]
+                )
+
             summary_path = temp_root / "analysis" / "summary.md"
             summary_path.write_text(_summary_lite(transcript, manifest.source), encoding="utf-8")
             manifest.stages[StageName.SYNTHESIZE] = _done_stage(temp_root, [summary_path])
@@ -265,9 +316,16 @@ def prepare_local_ingest(
     asr_model: str = "small",
     allow_model_download: bool = False,
     language: str | None = None,
+    frames: bool = False,
+    frame_interval: float = DEFAULT_FRAME_INTERVAL,
+    max_frames: int = DEFAULT_MAX_FRAMES,
     source_root: Path | None = None,
     expected_approval_sha256: str | None,
 ) -> Generator[PreparedLocalIngest]:
+    try:
+        validate_frame_options(frame_interval, max_frames)
+    except KeyframeError as exc:
+        raise IngestError(str(exc)) from exc
     source = source_path.expanduser()
     if not source.is_file():
         raise IngestError(f"source file does not exist: {source}")
@@ -312,11 +370,20 @@ def prepare_local_ingest(
             _asr_model=asr_model,
             _allow_model_download=allow_model_download,
             _language=language,
+            _frames=frames,
+            _frame_interval=float(frame_interval),
+            _max_frames=max_frames,
         )
 
 
 def plan_local_bundle_id(
-    source_path: Path, transcriber_command: str | None = None, *, language: str | None = None
+    source_path: Path,
+    transcriber_command: str | None = None,
+    *,
+    language: str | None = None,
+    frames: bool = False,
+    frame_interval: float = DEFAULT_FRAME_INTERVAL,
+    max_frames: int = DEFAULT_MAX_FRAMES,
 ) -> str:
     """Return the bundle id for a private capture of the source and sidecar."""
 
@@ -324,6 +391,9 @@ def plan_local_bundle_id(
         source_path,
         transcriber_command=transcriber_command,
         language=language,
+        frames=frames,
+        frame_interval=frame_interval,
+        max_frames=max_frames,
         expected_approval_sha256=None,
     ) as prepared:
         if _explicit_transcriber_command(transcriber_command) is not None:
@@ -357,6 +427,9 @@ def ingest_local(
     asr_model: str = "small",
     allow_model_download: bool = False,
     language: str | None = None,
+    frames: bool = False,
+    frame_interval: float = DEFAULT_FRAME_INTERVAL,
+    max_frames: int = DEFAULT_MAX_FRAMES,
 ) -> IngestResult:
     with prepare_local_ingest(
         source_path,
@@ -364,6 +437,9 @@ def ingest_local(
         asr_model=asr_model,
         allow_model_download=allow_model_download,
         language=language,
+        frames=frames,
+        frame_interval=frame_interval,
+        max_frames=max_frames,
         expected_approval_sha256=None,
     ) as prepared:
         return prepared.ingest(output_root)

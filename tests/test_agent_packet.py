@@ -62,7 +62,8 @@ def test_json_packet_preserves_existing_anchors_and_reports_layers(
         "evidence_limit": metadata["evidence_limit"],
         "segment_count": 3,
     }
-    for layer in ("visual", "speakers", "translation"):
+    assert packet["layers"]["visual"] == {"present": False, "reason": "not requested"}
+    for layer in ("speakers", "translation"):
         assert packet["layers"][layer] == {"present": False, "reason": "not processed"}
     for index, segment in enumerate(packet["segments"]):
         assert {key: segment[key] for key in SEGMENTS[index]} == SEGMENTS[index]
@@ -81,12 +82,11 @@ def test_json_packet_preserves_existing_anchors_and_reports_layers(
             {"type": "quote", "exact": segment["text"]},
         ]
     manifest = Manifest.load(result.bundle_dir)
-    manifest.stages[StageName.VISUAL].state = StageState.DONE
     manifest.stages[StageName.DIARIZE].state = StageState.DONE
     manifest.save(result.bundle_dir)
     assert cli.main(args) == 0
     layers = json.loads(capsys.readouterr().out)["layers"]
-    assert layers["visual"]["present"] is True
+    assert layers["visual"]["present"] is False
     assert layers["speakers"]["present"] is True
 
 

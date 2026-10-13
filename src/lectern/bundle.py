@@ -14,7 +14,7 @@ import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 from pydantic import (
     AfterValidator,
@@ -485,11 +485,41 @@ class TranscriptSegmentsDocument(RootModel[list[TranscriptSegmentRecord]]):
         return self
 
 
+class FrameRecord(ArtifactModel):
+    """One sampled image, with a timestamp relative to the captured video."""
+
+    index: NonNegativeStrictInt
+    t_s: Annotated[FiniteFloat, Field(strict=True, ge=0)]
+    file: BundleRelativePath
+    sha256: Sha256Digest
+    reason: Literal["scene", "interval"]
+    width: Annotated[int, Field(strict=True, gt=0, le=1280)]
+    height: Annotated[int, Field(strict=True, gt=0, le=1280)]
+
+    model_config = {"extra": "forbid", "strict": True}
+
+
+class FramesDocument(RootModel[list[FrameRecord]]):
+    """`visual/frames.json`, an ordered array of unique frame indices."""
+
+    model_config = {"strict": True, "json_schema_extra": {"x-lectern-uniqueBy": "index"}}
+
+    @model_validator(mode="after")
+    def validate_document(self) -> FramesDocument:
+        indices = [frame.index for frame in self.root]
+        if len(indices) != len(set(indices)):
+            raise ValueError("frame indices must be unique")
+        if any(left.t_s > right.t_s for left, right in zip(self.root, self.root[1:], strict=False)):
+            raise ValueError("frames must be ordered by timestamp")
+        return self
+
+
 ARTIFACT_MODELS: dict[str, type[BaseModel]] = {
     "manifest": Manifest,
     "source": SourceDocument,
     "transcript-segments": TranscriptSegmentsDocument,
     "transcript-metadata": TranscriptMetadataDocument,
+    "frames": FramesDocument,
 }
 
 

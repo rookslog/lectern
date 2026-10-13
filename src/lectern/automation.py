@@ -37,6 +37,7 @@ from lectern.ingest import (
 from lectern.ingest import (
     plan_local_bundle_id as plan_local_bundle_id,
 )
+from lectern.keyframes import DEFAULT_FRAME_INTERVAL, DEFAULT_MAX_FRAMES
 from lectern.provenance import (
     PROVENANCE_KEYS,
     attach_provenance_to_bundle,
@@ -308,6 +309,9 @@ class AutomationState(AutomationStateStore):
         asr_model: str = "small",
         allow_model_download: bool = False,
         language: str | None = None,
+        frames: bool = False,
+        frame_interval: float = DEFAULT_FRAME_INTERVAL,
+        max_frames: int = DEFAULT_MAX_FRAMES,
     ) -> IngestResult:
         queue_item = self.get_queue_item(queue_item_id)
         if queue_item.state is not QueueState.APPROVED:
@@ -329,6 +333,9 @@ class AutomationState(AutomationStateStore):
                         asr_model=asr_model,
                         allow_model_download=allow_model_download,
                         language=language,
+                        frames=frames,
+                        frame_interval=frame_interval,
+                        max_frames=max_frames,
                         source_root=root,
                         expected_approval_sha256=queue_item.content_sha256,
                     )
@@ -455,6 +462,9 @@ class AutomationState(AutomationStateStore):
         asr_model: str = "small",
         allow_model_download: bool = False,
         language: str | None = None,
+        frames: bool = False,
+        frame_interval: float = DEFAULT_FRAME_INTERVAL,
+        max_frames: int = DEFAULT_MAX_FRAMES,
     ) -> IngestResult:
         with prepare_local_ingest(
             source_path,
@@ -462,6 +472,9 @@ class AutomationState(AutomationStateStore):
             asr_model=asr_model,
             allow_model_download=allow_model_download,
             language=language,
+            frames=frames,
+            frame_interval=frame_interval,
+            max_frames=max_frames,
             expected_approval_sha256=None,
         ) as prepared:
             planned_bundle_id = prepared.planned_bundle_id()

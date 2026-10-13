@@ -7,8 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lectern.bundle import (
+    FramesDocument,
     Manifest,
     SourceDocument,
+    StageName,
+    StageState,
     TranscriptMetadataDocument,
     TranscriptSegmentsDocument,
 )
@@ -82,3 +85,19 @@ def read_transcript_metadata(
     payload = _contained_payload(bundle, path)
     _assert_declared_payload(manifest, path, payload)
     return TranscriptMetadataDocument.model_validate_json(payload, strict=True)
+
+
+def read_frames(bundle: Path, manifest: Manifest) -> FramesDocument | None:
+    """Read declared visual evidence through the same contained-byte boundary."""
+
+    if manifest.stages[StageName.VISUAL].state is not StageState.DONE:
+        return None
+    payload = _contained_payload(bundle, "visual/frames.json")
+    _assert_declared_payload(manifest, "visual/frames.json", payload)
+    frames = FramesDocument.model_validate_json(payload, strict=True)
+    for frame in frames.root:
+        image = _contained_payload(bundle, frame.file)
+        _assert_declared_payload(manifest, frame.file, image)
+        if hashlib.sha256(image).hexdigest() != frame.sha256:
+            raise ValueError("frame image does not match its index digest")
+    return frames
