@@ -298,7 +298,9 @@ def test_plain_library_rows_include_actual_status_and_preserve_json(
     assert structured.err == ""
     payload = json.loads(structured.out)
     if command == "list":
-        assert payload == {"bundles": [expected_bundle]}
+        assert payload == {
+            "bundles": [{**expected_bundle, "title": "Synthetic Talk", "external": None}]
+        }
     else:
         assert payload["bundle"] == expected_bundle
         assert payload["manifest"] == expected_manifest

@@ -28,6 +28,99 @@
       "title": "ArtifactRef",
       "type": "object"
     },
+    "ExternalSource": {
+      "additionalProperties": false,
+      "description": "Allowlisted external identity from local metadata, never download details.",
+      "properties": {
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "playlist_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Playlist Id"
+        },
+        "playlist_title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Playlist Title"
+        },
+        "playlist_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Playlist Index"
+        },
+        "language_hint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language Hint"
+        }
+      },
+      "title": "ExternalSource",
+      "type": "object"
+    },
     "Source": {
       "additionalProperties": false,
       "allOf": [
@@ -124,6 +217,17 @@
           ],
           "default": null,
           "title": "Duration S"
+        },
+        "external": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExternalSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -207,6 +311,13 @@
           ],
           "default": null,
           "title": "Error"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
         }
       },
       "title": "StageRecord",
@@ -227,7 +338,7 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "1.1.0",
       "title": "Schema Version",
       "type": "string"
     },

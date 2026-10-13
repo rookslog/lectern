@@ -7,7 +7,7 @@ import sqlite3
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from lectern import __version__
 from lectern.automation import (
@@ -27,7 +27,7 @@ from lectern.bundle import StageName, StageState, export_artifact_schemas, expor
 from lectern.evidence import SelectedEvidence
 from lectern.ingest import IngestError
 from lectern.migrations import MigrationError, migrate_bundle
-from lectern.readable import format_time
+from lectern.readable import format_time, source_details
 from lectern.records import redact_paths
 
 # Commands that return stored data to a caller, and therefore must emit no
@@ -574,28 +574,80 @@ def _library(args: Sequence[str]) -> int:
     return 2
 
 
+def _project_metadata_values(values: dict[str, Any]) -> dict[str, Any]:
+    """Redact display metadata without changing stored provenance or identities."""
+
+    return {
+        key: (
+            redact_paths(value)
+            if isinstance(value, str)
+            else _project_metadata_values(cast(dict[str, Any], value))
+            if isinstance(value, dict)
+            else value
+        )
+        for key, value in values.items()
+    }
+
+
 def _library_list(args: Sequence[str], state_path: Path, json_output: bool) -> int:
-    if args:
+    grouped = bool(args) and args[0] == "--playlist"
+    if args and (not grouped or len(args) > 2 or (len(args) == 2 and args[1].startswith("-"))):
         _library_usage()
         return 2
+    playlist_id = args[1] if len(args) == 2 else None
     with open_state(state_path) as state:
         bundles = state.list_library()
-        titles: dict[str, str] = {}
-        if not json_output:
-            for bundle in bundles:
-                try:
-                    titles[bundle.bundle_id] = (
-                        state.get_library_manifest(bundle.bundle_id).source.title or "Untitled talk"
-                    )
-                except (AutomationError, OSError):
-                    titles[bundle.bundle_id] = "unknown"
-    if json_output:
-        _print_json({"bundles": [bundle.to_dict() for bundle in bundles]})
-    else:
+        rows: list[dict[str, Any]] = []
         for bundle in bundles:
-            title = _plain_search_field(redact_paths(titles[bundle.bundle_id]))
-            print(f"{bundle.bundle_id}\t{bundle.created_at}\t{bundle.status.value}\t{title}")
+            title, external = "unknown", None
+            try:
+                source = state.get_library_manifest(bundle.bundle_id).source
+                title = source.title or "Untitled talk"
+                external = (
+                    None if source.external is None else source.external.model_dump(mode="json")
+                )
+            except (AutomationError, OSError):
+                pass
+            rows.append({**bundle.to_dict(), "title": title, "external": external})
+    if grouped:
+        if playlist_id is not None:
+            rows = [
+                row
+                for row in rows
+                if row["external"] is not None and row["external"]["playlist_id"] == playlist_id
+            ]
+        rows.sort(key=_playlist_sort_key)
+    if json_output:
+        # Filtering and ordering use the original metadata; projection is display-only.
+        for row in rows:
+            row["title"] = redact_paths(row["title"])
+            if row["external"] is not None:
+                row["external"] = _project_metadata_values(row["external"])
+        _print_json({"bundles": rows})
+    else:
+        previous_group: str | None = None
+        for row in rows:
+            title = _plain_search_field(redact_paths(row["title"]))
+            if grouped:
+                group_external: dict[str, Any] = row["external"] or {}
+                group = group_external.get("playlist_id") or ""
+                if group != previous_group:
+                    playlist_title = group_external.get("playlist_title") or group
+                    header = f"{playlist_title} ({group})" if group else "Without playlist"
+                    print(_plain_search_field(redact_paths(header)))
+                    previous_group = group
+                index = group_external.get("playlist_index") if group else None
+                print(f"{index if index is not None else ''}\t{row['bundle_id']}\t{title}")
+            else:
+                print(f"{row['bundle_id']}\t{row['created_at']}\t{row['status']}\t{title}")
     return 0
+
+
+def _playlist_sort_key(row: dict[str, Any]) -> tuple[bool, str, bool, int, str]:
+    external: dict[str, Any] = row["external"] or {}
+    playlist = external.get("playlist_id") or ""
+    index = external.get("playlist_index") if playlist else None
+    return not bool(playlist), playlist, index is None, index or 0, row["bundle_id"]
 
 
 def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> int:
@@ -606,7 +658,7 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
         bundle = state.get_library_bundle(args[0])
         manifest = state.get_library_manifest(bundle.bundle_id)
         try:
-            evidence = state.get_library_evidence(bundle.bundle_id)
+            evidence = state.get_registered_evidence(bundle.bundle_id)
         except (AutomationError, OSError):
             # Show remains an inspection command for non-ready bundles. Never
             # derive transcript facts from evidence that failed strict checks.
@@ -620,9 +672,18 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
     title = redact_paths(manifest.source.title or "Untitled talk")
     payload = {
         "bundle": bundle.to_dict(),
-        "manifest": manifest.model_dump(mode="json"),
+        "manifest": {
+            **manifest.model_dump(mode="json"),
+            "source": _project_metadata_values(manifest.source.model_dump(mode="json")),
+        },
         "bundle_id": bundle.bundle_id,
         "title": title,
+        **_project_metadata_values(source_details(manifest.source)),
+        "external": (
+            None
+            if manifest.source.external is None
+            else _project_metadata_values(manifest.source.external.model_dump(mode="json"))
+        ),
         "status": bundle.status.value,
         "created_at": bundle.created_at,
         "source_kind": source_kind,
@@ -636,9 +697,16 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
     if json_output:
         _print_json(payload)
     else:
+        details = "".join(
+            f"{'URL' if key == 'url' else key.capitalize()}: "
+            f"{_plain_search_field(redact_paths(value))}\n"
+            for key, value in source_details(manifest.source).items()
+            if value is not None
+        )
         print(
             f"Bundle: {bundle.bundle_id}\n"
             f"Title: {_plain_search_field(title)}\n"
+            f"{details}"
             f"Status: {bundle.status.value}\n"
             f"Created: {bundle.created_at}\n"
             f"Source kind: {source_kind}\n"
@@ -813,8 +881,8 @@ def _library_search(args: Sequence[str], state_path: Path, json_output: bool) ->
                     "start_s": None if segment is None else segment.start_s,
                     "title": (
                         None
-                        if evidence is None
-                        else redact_paths(evidence.source.source.title or "")
+                        if evidence is None or evidence.source.source.title is None
+                        else redact_paths(evidence.source.source.title)
                     ),
                 }
             )
@@ -862,7 +930,8 @@ def _library_cite(args: Sequence[str], state_path: Path, json_output: bool) -> i
 
 def _library_usage() -> None:
     print(
-        "usage: lectern library {list|show BUNDLE_ID|search [--] QUERY [--operators]|"
+        "usage: lectern library {list [--playlist [ID]]|show BUNDLE_ID|"
+        "search [--] QUERY [--operators]|"
         "cite BUNDLE_ID SEGMENT_ID} [--state PATH] [--json]",
         file=sys.stderr,
     )
@@ -878,6 +947,8 @@ def _migrate_bundle(args: Sequence[str]) -> int:
         print(f"migrate: {exc}", file=sys.stderr)
         return 3
     _print_json(result.to_public_dict())
+    if result.source_version == "1.0.0" and result.outcome == "already_current":
+        print("migrate: already readable; 1.0.0 is a subset of 1.1.0", file=sys.stderr)
     return 0
 
 

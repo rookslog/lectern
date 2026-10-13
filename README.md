@@ -144,18 +144,51 @@ uv run lectern queue ingest <queue-item-id>
 uv run lectern library list
 ```
 
+### Playlists and an inbox folder
+
+Obtaining media is your own action and rights judgment, outside Lectern: use
+media you have the right to access. Lectern includes no downloader. Place local
+media in an inbox folder with optional adjacent files:
+
+- `<stem>.info.json` in yt-dlp's `--write-info-json` format. Lectern reads only
+  `id`, `title`, `channel` (fallback `uploader`), `upload_date` (YYYYMMDD),
+  `duration`, `webpage_url`, `language`, `playlist_id`, `playlist_title` (fallback
+  `playlist`), `playlist_index`, and `extractor_key`; all other keys are ignored
+  and never copied into bundles. Missing fields are fine. Malformed metadata is
+  ignored with an acquire-stage warning; its bytes still bind queue approval.
+- `<stem>.<lang>.vtt` for timed captions, using the selection rules above.
+
+```bash
+lectern sources add-folder inbox ~/Lectern/inbox
+lectern sources scan inbox
+lectern queue list
+lectern queue approve <queue-item-id>
+lectern queue ingest <queue-item-id>
+lectern library list --playlist
+```
+
+Repeat approval/ingest for each queued talk. `library list --playlist` groups by
+playlist ID, orders talks by playlist index (missing indexes last), then lists
+talks without a playlist. Plain groups have a `playlist title (playlist ID)`
+header and `index<TAB>bundle ID<TAB>title` rows; `--json` keeps a flat, ordered
+`bundles` array. `--playlist ID` filters to one playlist. Metadata language is
+only a recorded hint: it does not override ASR detection or `--language`.
+
 Plain `library list` rows contain four tab-separated fields: bundle ID, creation
 time, status (`ready`, `incomplete`, `failed`, or `needs-reprocessing`), and title.
-The first three fields retain their order; the JSON listing is unchanged.
+The first three fields retain their order; JSON rows also include `title` and
+`external` (null when no external identity is recorded).
 `library show <bundle-id>` prints a readable overview with title, status, creation
 time, recorded source kind, duration, transcript method, segment and word counts,
 layer availability from manifest stage states, and the redacted bundle directory.
+Channel, published date, original URL, and playlist title/index appear when present.
 Its `--json` output keeps `bundle` and `manifest` and adds these overview fields.
 Transcript facts that cannot be read through strict evidence checks are shown as
 unknown (null in JSON); inspection remains available for non-ready bundles.
 
 `analysis/summary.md` is an overview card, not a summary: it records the title,
-duration, transcript method, segment and word counts, and segment time span.
+duration, transcript method, segment and word counts, and segment time span,
+plus channel, published date, original URL, and playlist title/index when present.
 Lectern does not summarize. Agents write summaries using Lectern's anchors.
 Read a ready bundle's transcript with:
 
@@ -270,8 +303,11 @@ not rerun for the current segmenter version.
 - Local bundles can contain sensitive media-derived artifacts. Keep them out of
   commits and issue reports.
 - Bundle manifest compatibility is tied to the manifest `schema_version`. The
-  current manifest schema version is `1.0.0`; pre-release compatibility policy
-  is described in [SUPPORT.md](SUPPORT.md).
+  current manifest schema version is `1.1.0`, adding optional transcript
+  language/ASR backend metadata, external source metadata, and stage warnings.
+  `1.0.0` bundles remain readable without migration; later versions such as
+  `1.2.0` are refused. Pre-release compatibility policy is described in
+  [SUPPORT.md](SUPPORT.md).
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Security
 and privacy reporting guidance is in [SECURITY.md](SECURITY.md).

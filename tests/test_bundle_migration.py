@@ -1399,8 +1399,61 @@ def test_already_current_is_a_validated_no_op(tmp_path: Path) -> None:
     bundle = ingest_local(media, tmp_path / "current-bundles").bundle_dir
     result = migrations.migrate_bundle(bundle)
     assert result.outcome == "already_current"
-    assert result.source_version == result.target_version == "1.0.0"
+    assert result.source_version == result.target_version == "1.1.0"
     assert result.backup_retained is False
+
+
+def test_stored_one_zero_bundle_stays_ready_but_later_minor_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    media = tmp_path / "synthetic_talk.wav"
+    media.write_bytes(SYNTHETIC_TALK.read_bytes())
+    media.with_suffix(".transcript.txt").write_text(SYNTHETIC_TRANSCRIPT.read_text())
+    state_path = tmp_path / "state.sqlite"
+    with open_state(state_path) as state:
+        result = state.ingest_one_shot(media, tmp_path / "bundles")
+    assert result.manifest.schema_version == "1.1.0"
+    bundle = result.bundle_dir
+    manifest = _read_json(bundle / MANIFEST_NAME)
+    manifest["schema_version"] = "1.0.0"
+    manifest["source"].pop("external")
+    for stage in manifest["stages"].values():
+        stage.pop("warnings")
+    source = _read_json(bundle / "source.json")
+    source["source"].pop("external")
+    _write_json(bundle / "source.json", source)
+    metadata = _read_json(bundle / "transcript/metadata.json")
+    metadata.pop("language")
+    for field in (
+        "model",
+        "library_version",
+        "compute_type",
+        "detected_language",
+        "language_probability",
+    ):
+        metadata["backend"].pop(field, None)
+    _write_json(bundle / "transcript/metadata.json", metadata)
+    _rewrite_manifest_hashes(bundle, manifest)
+    _write_json(bundle / MANIFEST_NAME, manifest)
+    before = _tree_bytes(bundle)
+
+    assert cli.main(["library", "list", "--state", str(state_path), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["bundles"][0]["status"] == "ready"
+    with open_state(state_path) as state:
+        assert state.get_library_manifest(result.manifest.bundle_id).schema_version == "1.0.0"
+        assert state.get_registered_evidence(result.manifest.bundle_id).segments.root
+    assert cli.main(["migrate", str(bundle)]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["outcome"] == "already_current"
+    assert "already readable; 1.0.0 is a subset of 1.1.0" in captured.err
+    assert _tree_bytes(bundle) == before
+
+    manifest["schema_version"] = "1.2.0"
+    _write_json(bundle / MANIFEST_NAME, manifest)
+    with pytest.raises(ValueError, match="unsupported bundle schema version '1.2.0'"):
+        Manifest.load(bundle)
+    assert cli.main(["library", "list", "--state", str(state_path), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["bundles"][0]["status"] != "ready"
 
 
 def test_already_current_refuses_raw_path_bearing_stage_error(tmp_path: Path) -> None:
@@ -2200,7 +2253,11 @@ def test_cli_migration_projects_path_bearing_id_without_rewriting_identity(
     capsys.readouterr()
     assert cli.main(["migrate", str(bundle)]) == 0
     captured = capsys.readouterr()
-    assert captured.err == ""
+    assert captured.err == (
+        "migrate: already readable; 1.0.0 is a subset of 1.1.0\n"
+        if mode == "already_current"
+        else ""
+    )
     expected_id = raw_id if raw_id == "ordinary-bundle-id" else PATH_REDACTED
     assert json.loads(captured.out) == {
         "bundle_id": expected_id,

@@ -384,7 +384,9 @@ def now_timestamp() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def approval_digest(media_sha256: str, sidecar_sha256: str | None) -> str:
+def approval_digest(
+    media_sha256: str, sidecar_sha256: str | None, info_sha256: str | None = None
+) -> str:
     """Existing approval identity, composed from captured component digests."""
 
     digest = hashlib.sha256(b"media\0" + media_sha256.encode("ascii") + b"\0")
@@ -393,6 +395,10 @@ def approval_digest(media_sha256: str, sidecar_sha256: str | None) -> str:
         if sidecar_sha256 is not None
         else b"transcript-sidecar-absent"
     )
+    # Preserve existing approvals when metadata is absent. Presence, removal,
+    # and every byte change are covered when an info sidecar is supplied.
+    if info_sha256 is not None:
+        digest.update(b"\0info-sidecar\0" + info_sha256.encode("ascii"))
     return digest.hexdigest()
 
 

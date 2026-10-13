@@ -5,6 +5,22 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Raised the writer's manifest schema to `1.1.0` for optional transcript
+  language/ASR backend metadata, `source.external`, and stage warnings. Readers
+  accept both `1.0.0` and `1.1.0` without migration and refuse other versions,
+  including `1.2.0`. Migration of a `1.0.0` bundle remains a validated no-op;
+  the legacy `0.1.0` to `1.0.0` migration target is unchanged.
+- Projected metadata paths in JSON library listings, show output (including
+  embedded manifest sources), and retained search-title projection. Non-UTF-8
+  metadata strings are ignored with the existing acquire-stage warning and
+  filename fallback.
+- Added adjacent local `.info.json` metadata intake with an allowlisted optional
+  external identity, channel, publication date, and talk title. Captured metadata
+  bytes are bound to queue approval and bundle identity; malformed metadata is
+  ignored with a recorded acquire-stage warning. No downloader is included.
+- Added `library list --playlist [ID]` grouping/filtering and title/external JSON
+  fields, plus provenance facts in `library show` and the overview card. Existing
+  `1.0.0` bundles remain readable under the additive `1.1.0` contract.
 - Added timed VTT/SRT sidecar ingestion, including language-tagged filenames and
   rolling auto-caption de-duplication, with captured caption bytes bound to queue
   approval. Added optional local faster-whisper ASR via `lectern[asr]`, model and
@@ -61,4 +77,4 @@ The package version and bundle manifest schema version are separate.
   and agents.
 
 The current package version is `0.0.1`. The current manifest schema version is
-`1.0.0`.
+`1.1.0`.

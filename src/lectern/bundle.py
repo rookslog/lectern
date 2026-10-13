@@ -30,7 +30,7 @@ from pydantic import (
 
 from lectern.records import redact_paths
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 CONTENT_REF_PATTERN = r"^sha256:[0-9a-f]{64}$"
 _CONTENT_REF = re.compile(CONTENT_REF_PATTERN)
 
@@ -79,13 +79,13 @@ def _require_manifest_schema_version(schema: dict[str, object]) -> None:
 def schema_version_is_compatible(version: str) -> bool:
     """Whether this build can read a manifest declaring `version`.
 
-    The preview reader accepts exactly the schema it implements. Artifact models
-    reject unknown fields so privacy-sensitive data cannot be silently discarded;
-    claiming that a later same-major schema is readable would contradict that
-    strict validation as soon as the later schema added a field.
+    Schema 1.1.0 only adds optional fields, so 1.0.0 remains readable without
+    migration. All other versions, including later same-major schemas, are
+    refused. Artifact models still reject unknown fields rather than silently
+    discarding potentially privacy-sensitive data.
     """
 
-    return version == SCHEMA_VERSION
+    return version in {"1.0.0", SCHEMA_VERSION}
 
 
 def atomic_write_text(path: Path, text: str) -> Path:
@@ -145,6 +145,18 @@ class StageState(StrEnum):
     SKIPPED = "skipped"
 
 
+class ExternalSource(ArtifactModel):
+    """Allowlisted external identity from local metadata, never download details."""
+
+    provider: str | None = None
+    id: str | None = None
+    url: str | None = None
+    playlist_id: str | None = None
+    playlist_title: str | None = None
+    playlist_index: NonNegativeStrictInt | None = None
+    language_hint: str | None = None
+
+
 class Source(ArtifactModel):
     """Provenance. `local` sources trigger the privacy hard rule (ADR-0002)."""
 
@@ -162,6 +174,18 @@ class Source(ArtifactModel):
     channel: str | None = None
     published: datetime | None = None
     duration_s: FiniteFloat | None = None
+    external: ExternalSource | None = None
+
+    @field_validator("published", mode="before")
+    @classmethod
+    def parse_published(cls, value: object) -> object:
+        # The model-level before-validator makes strict JSON validation run on
+        # parsed Python values, where an ISO-8601 string is not a datetime. A
+        # populated `published` (first written by info.json intake) therefore
+        # failed every strict evidence read of its bundle.
+        if isinstance(value, str):
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -221,6 +245,7 @@ class StageRecord(ArtifactModel):
     finished: datetime | None = None
     outputs: list[ArtifactRef] = Field(default_factory=empty_artifact_refs)
     error: str | None = None
+    warnings: list[str] = Field(default_factory=list)
 
     model_config = {"validate_assignment": True}
 
