@@ -107,13 +107,16 @@ faster-whisper transcription of normalized audio:
 
 ```bash
 uv sync --extra asr
-uv run lectern ingest local-talk.wav --asr-model small
+uv run lectern ingest local-talk.wav --asr-model small --allow-model-download
 ```
 
 The default model is multilingual `small`, running on CPU with `int8` compute.
-[faster-whisper downloads model weights](https://github.com/SYSTRAN/faster-whisper#model-conversion)
-on first use if they are not cached; inference stays local. Both `lectern ingest`
-and `lectern queue ingest` accept `--asr-model NAME` and optional `--language CODE`.
+First run: pass `--allow-model-download` once to let
+[faster-whisper download model weights](https://github.com/SYSTRAN/faster-whisper#model-conversion);
+later runs use the cached model offline. Inference stays local. Both `lectern ingest`
+and `lectern queue ingest` accept `--asr-model NAME`, `--allow-model-download`, and
+optional `--language CODE`. Downloads are disabled by default, and the bundle records
+whether model downloads were allowed.
 Without a language override, ASR auto-detects the language; captions use the
 filename's language tag when present. The bundle records language and ASR backend
 details, including language probability. Captions (including third-party and

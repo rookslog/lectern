@@ -306,6 +306,7 @@ class AutomationState(AutomationStateStore):
         *,
         transcriber_command: str | None = None,
         asr_model: str = "small",
+        allow_model_download: bool = False,
         language: str | None = None,
     ) -> IngestResult:
         queue_item = self.get_queue_item(queue_item_id)
@@ -326,6 +327,7 @@ class AutomationState(AutomationStateStore):
                         source_path,
                         transcriber_command=transcriber_command,
                         asr_model=asr_model,
+                        allow_model_download=allow_model_download,
                         language=language,
                         source_root=root,
                         expected_approval_sha256=queue_item.content_sha256,
@@ -451,12 +453,14 @@ class AutomationState(AutomationStateStore):
         *,
         transcriber_command: str | None = None,
         asr_model: str = "small",
+        allow_model_download: bool = False,
         language: str | None = None,
     ) -> IngestResult:
         with prepare_local_ingest(
             source_path,
             transcriber_command=transcriber_command,
             asr_model=asr_model,
+            allow_model_download=allow_model_download,
             language=language,
             expected_approval_sha256=None,
         ) as prepared:

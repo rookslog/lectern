@@ -1,10 +1,11 @@
-"""Six acceptance checks using invented captions and synthetic local audio."""
+"""Acceptance checks using invented captions and synthetic local audio."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import shutil
+import sys
 import wave
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,24 @@ def test_rolling_webvtt_emits_spoken_phrases_once(tmp_path: Path) -> None:
         "Then we test them.",
         "Finally we share results.",
     ]
+    media = _media(tmp_path / "prefix")
+    media.with_suffix(".vtt").write_text(
+        "WEBVTT\n\n00:00.000 --> 00:01.000\nI\n\n00:01.000 --> 00:02.000\nIt works.\n"
+    )
+    prefix_result = ingest_local(media, tmp_path / "bundles")
+    assert [row["text"] for row in _segments(prefix_result.bundle_dir)] == ["I", "It works."]
+
+
+def test_command_transcript_does_not_inherit_caption_language(tmp_path: Path) -> None:
+    media = _media(tmp_path, "timed_plain.fr.vtt")
+    transcriber = tmp_path / "transcriber.py"
+    transcriber.write_text('print(\'{"text": "Command transcript."}\')\n')
+    result = ingest_local(
+        media,
+        tmp_path / "bundles",
+        transcriber_command=f'"{sys.executable}" "{transcriber}"',
+    )
+    assert _metadata(result.bundle_dir)["language"] is None
 
 
 def test_srt_sidecar_records_timed_segments(tmp_path: Path) -> None:
@@ -118,9 +137,12 @@ def test_builtin_asr_records_fake_backend_and_detected_language(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    download_permissions: list[bool] = []
+
     class FakeBackend:
-        def __init__(self, model: str) -> None:
+        def __init__(self, model: str, *, allow_model_download: bool = False) -> None:
             self.model = model
+            download_permissions.append(allow_model_download)
 
         def transcribe(self, audio: Path, *, language: str | None = None) -> ASRResult:
             with wave.open(str(audio)) as wav:
@@ -171,6 +193,9 @@ def test_builtin_asr_records_fake_backend_and_detected_language(
     }
     assert metadata["remote_services"]["lectern_invoked"] is False
     assert metadata["remote_services"]["allowed"] is False
+    assert metadata["remote_services"]["transcriber_network_posture"] == (
+        "local_inference_cached_model_only"
+    )
     # A second invocation exercises model selection, language override and
     # non-plannable ASR replay through the same end-to-end path.
     assert (
@@ -184,6 +209,7 @@ def test_builtin_asr_records_fake_backend_and_detected_language(
                 str(tmp_path / "state.sqlite"),
                 "--asr-model",
                 "tiny",
+                "--allow-model-download",
                 "--language",
                 "es",
             ]
@@ -193,6 +219,48 @@ def test_builtin_asr_records_fake_backend_and_detected_language(
     alternate = next(path for path in (tmp_path / "bundles").iterdir() if path != bundle)
     assert _metadata(alternate)["language"] == "es"
     assert _metadata(alternate)["backend"]["model"] == "tiny"
+    assert _metadata(alternate)["remote_services"]["lectern_invoked"] is True
+    assert _metadata(alternate)["remote_services"]["transcriber_network_posture"] == (
+        "local_inference_model_download_allowed"
+    )
+    with open_state(tmp_path / "state.sqlite") as state:
+        approved = state.approve_queue_item(state.list_queue()[0].id)
+    assert (
+        cli.main(
+            [
+                "queue",
+                "ingest",
+                approved.id,
+                "--output",
+                str(tmp_path / "bundles"),
+                "--state",
+                str(tmp_path / "state.sqlite"),
+                "--asr-model",
+                "small",
+                "--allow-model-download",
+            ]
+        )
+        == 0
+    )
+    downloaded = next(
+        path for path in (tmp_path / "bundles").iterdir() if path not in (bundle, alternate)
+    )
+    assert _metadata(downloaded)["remote_services"]["lectern_invoked"] is True
+    assert _metadata(downloaded)["remote_services"]["transcriber_network_posture"] == (
+        "local_inference_model_download_allowed"
+    )
+    (tmp_path / "converted-directory").mkdir()
+    monkeypatch.chdir(tmp_path)
+    for index, model in enumerate(
+        (str(tmp_path / "converted-model"), r"models\converted-model", "converted-directory")
+    ):
+        local = ingest_local(media, tmp_path / f"local-bundles-{index}", asr_model=model)
+        assert _metadata(local.bundle_dir)["backend"]["model"] == (
+            "local:converted-directory"
+            if model == "converted-directory"
+            else "local:converted-model"
+        )
+    assert download_permissions == [False, True, True, False, False, False]
 
 
 def test_missing_asr_extra_names_install_fix(
@@ -200,7 +268,7 @@ def test_missing_asr_extra_names_install_fix(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def unavailable(model: str) -> None:
+    def unavailable(model: str, *, allow_model_download: bool = False) -> None:
         raise ImportError("faster_whisper unavailable")
 
     monkeypatch.setattr("lectern.asr.create_asr_backend", unavailable, raising=False)
@@ -218,6 +286,25 @@ def test_missing_asr_extra_names_install_fix(
         == 1
     )
     assert "lectern[asr]" in capsys.readouterr().err
+
+    def uncached(model: str, *, allow_model_download: bool = False) -> None:
+        raise RuntimeError("model weights are not cached")
+
+    monkeypatch.setattr("lectern.asr.create_asr_backend", uncached)
+    assert (
+        cli.main(
+            [
+                "ingest",
+                str(_media(tmp_path)),
+                "--output",
+                str(tmp_path / "bundles"),
+                "--state",
+                str(tmp_path / "state.sqlite"),
+            ]
+        )
+        == 1
+    )
+    assert "--allow-model-download" in capsys.readouterr().err
 
 
 def test_queue_caption_bytes_are_bound_to_approval(tmp_path: Path) -> None:

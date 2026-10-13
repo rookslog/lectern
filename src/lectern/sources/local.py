@@ -31,6 +31,11 @@ EXCLUDED_SCAN_DIR_NAMES = frozenset({".lectern"})
 
 EXCLUDED_SCAN_DIR_PREFIXES = (".lectern-ingest.",)
 
+_CaptionCache = dict[Path, tuple[int, dict[str, list[Path]]]]
+_TAGGED_CAPTION_NAME = re.compile(
+    r"(.*)\.([A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*)\.(?:vtt|srt)", re.DOTALL
+)
+
 
 @dataclass(frozen=True)
 class SourcePreflight:
@@ -125,7 +130,9 @@ def is_bundle_output_path(root: Path, path: Path) -> bool:
         ancestor = parent
 
 
-def _transcript_sidecar_escapes_root(path: Path, root: Path) -> bool:
+def _transcript_sidecar_escapes_root(
+    path: Path, root: Path, *, caption_cache: _CaptionCache | None = None
+) -> bool:
     """Report whether a media file's transcript sidecar resolves outside `root`.
 
     `LocalFolderAdapter.discover` drops such media (the sidecar is content the
@@ -140,7 +147,7 @@ def _transcript_sidecar_escapes_root(path: Path, root: Path) -> bool:
     function is what states the rule, so it is what should enforce it.
     """
 
-    sidecar = transcript_sidecar_path(path)
+    sidecar = transcript_sidecar_path(path, caption_cache=caption_cache)
     if sidecar is None:
         return False
     return _sidecar_escapes_root(sidecar, root)
@@ -156,15 +163,32 @@ def _sidecar_escapes_root(sidecar: Path, root: Path) -> bool:
     return False
 
 
-def transcript_sidecar_path(path: Path, *, root: Path | None = None) -> Path | None:
+def _tagged_caption_paths(path: Path, cache: _CaptionCache | None) -> list[Path]:
+    """Index tagged names once per directory state, scoped to the current scan."""
+
+    if cache is None:
+        cache = {}
+    directory = path.parent
+    mtime_ns = directory.stat().st_mtime_ns
+    cached = cache.get(directory)
+    if cached is None or cached[0] != mtime_ns:
+        by_stem: dict[str, list[Path]] = {}
+        for candidate in sorted(directory.iterdir()):
+            match = _TAGGED_CAPTION_NAME.fullmatch(candidate.name)
+            if match is not None:
+                by_stem.setdefault(match.group(1), []).append(candidate)
+        cached = (mtime_ns, by_stem)
+        cache[directory] = cached
+    return cached[1].get(path.stem, [])
+
+
+def transcript_sidecar_path(
+    path: Path, *, root: Path | None = None, caption_cache: _CaptionCache | None = None
+) -> Path | None:
     """Select captions before plain text, identically for discovery and capture."""
 
     exact = [path.with_suffix(suffix) for suffix in (".vtt", ".srt")]
-    tagged = sorted(
-        candidate
-        for candidate in path.parent.iterdir()
-        if caption_sidecar_language(path, candidate) is not None
-    )
+    tagged = _tagged_caption_paths(path, caption_cache)
     sidecar = next(
         (
             candidate
@@ -190,9 +214,11 @@ def caption_sidecar_language(media: Path, sidecar: Path) -> str | None:
     return match.group(1) if match is not None else None
 
 
-def approval_digest_and_media_size(path: Path, *, root: Path | None = None) -> tuple[str, int]:
+def approval_digest_and_media_size(
+    path: Path, *, root: Path | None = None, caption_cache: _CaptionCache | None = None
+) -> tuple[str, int]:
     media_digest, media_size = digest_and_size(path)
-    sidecar = transcript_sidecar_path(path, root=root)
+    sidecar = transcript_sidecar_path(path, root=root, caption_cache=caption_cache)
     sidecar_digest = digest_and_size(sidecar)[0] if sidecar is not None else None
     return approval_digest(media_digest, sidecar_digest), media_size
 
@@ -207,11 +233,14 @@ class LocalFolderAdapter:
 
         root_resolved = root.resolve()
         items: list[SourceItem] = []
+        caption_cache: _CaptionCache = {}
         for path in iter_local_media_files(root):
             absolute = path.resolve()
             relative = path.relative_to(root).as_posix()
             try:
-                digest, size = approval_digest_and_media_size(path, root=root_resolved)
+                digest, size = approval_digest_and_media_size(
+                    path, root=root_resolved, caption_cache=caption_cache
+                )
             except AutomationError:
                 continue
             stat = path.stat()
@@ -240,11 +269,14 @@ def preflight_local_folder(path: Path) -> SourcePreflight:
     readable = False
     media_files = 0
     if is_dir:
+        caption_cache: _CaptionCache = {}
         try:
             media_files = sum(
                 1
                 for media in iter_local_media_files(resolved)
-                if not _transcript_sidecar_escapes_root(media, resolved)
+                if not _transcript_sidecar_escapes_root(
+                    media, resolved, caption_cache=caption_cache
+                )
             )
             readable = True
         except OSError:

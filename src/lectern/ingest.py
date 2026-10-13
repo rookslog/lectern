@@ -121,6 +121,7 @@ class PreparedLocalIngest:
     _command: str | None
     _sidecar_path: Path | None
     _asr_model: str
+    _allow_model_download: bool
     _language: str | None
 
     def planned_bundle_id(self) -> str | None:
@@ -151,16 +152,17 @@ class PreparedLocalIngest:
                 transcript = _transcribe_with_local_command(
                     self._command, audio_path, source_duration
                 )
-                if self._sidecar_path is not None:
-                    transcript = _with_language(
-                        transcript, caption_sidecar_language(source, self._sidecar_path)
-                    )
             elif self._sidecar_payload is not None:
                 transcript = _sidecar_transcript(
                     source, self._sidecar_payload, source_duration, sidecar_path=self._sidecar_path
                 )
             else:
-                transcript = _transcribe_with_asr(self._asr_model, audio_path, self._language)
+                transcript = _transcribe_with_asr(
+                    self._asr_model,
+                    audio_path,
+                    self._language,
+                    allow_model_download=self._allow_model_download,
+                )
             transcript = _with_language(transcript, self._language)
 
             current_source_digest, current_source_size = _digest_and_size(source)
@@ -242,6 +244,7 @@ def prepare_local_ingest(
     *,
     transcriber_command: str | None = None,
     asr_model: str = "small",
+    allow_model_download: bool = False,
     language: str | None = None,
     source_root: Path | None = None,
     expected_approval_sha256: str | None,
@@ -284,6 +287,7 @@ def prepare_local_ingest(
             _command=command,
             _sidecar_path=sidecar,
             _asr_model=asr_model,
+            _allow_model_download=allow_model_download,
             _language=language,
         )
 
@@ -328,12 +332,14 @@ def ingest_local(
     *,
     transcriber_command: str | None = None,
     asr_model: str = "small",
+    allow_model_download: bool = False,
     language: str | None = None,
 ) -> IngestResult:
     with prepare_local_ingest(
         source_path,
         transcriber_command=transcriber_command,
         asr_model=asr_model,
+        allow_model_download=allow_model_download,
         language=language,
         expected_approval_sha256=None,
     ) as prepared:
@@ -456,13 +462,12 @@ def _caption_segments(transcript: str, kind: str) -> tuple[TranscriptSegment, ..
         cleaned_lines = [line for line in cleaned_lines if line]
         if not cleaned_lines:
             continue
-        text = "\n".join(cleaned_lines)
         # YouTube emits the previous last line again at the start of the next
         # cue, including brief repeat-only cues. Keep that line as the rolling
         # reference even when stripping it leaves no new text.
-        if kind == "vtt" and previous_last_line and text.startswith(previous_last_line):
-            text = text[len(previous_last_line) :].strip()
+        repeated_first_line = kind == "vtt" and cleaned_lines[0] == previous_last_line
         previous_last_line = cleaned_lines[-1]
+        text = "\n".join(cleaned_lines[1:] if repeated_first_line else cleaned_lines)
         if text:
             segments.append(
                 TranscriptSegment(len(segments), start_s, end_s, text, f"caption_{kind}")
@@ -472,13 +477,20 @@ def _caption_segments(transcript: str, kind: str) -> tuple[TranscriptSegment, ..
     return tuple(segments)
 
 
-def _transcribe_with_asr(model: str, audio: Path, language: str | None) -> TranscriptResult:
+def _transcribe_with_asr(
+    model: str, audio: Path, language: str | None, *, allow_model_download: bool = False
+) -> TranscriptResult:
     try:
-        backend = asr.create_asr_backend(model)
+        backend = asr.create_asr_backend(model, allow_model_download=allow_model_download)
     except ImportError as exc:
         raise IngestError(ASR_INSTALL_HINT) from exc
     except Exception as exc:
-        raise IngestError(f"local ASR initialization failed: {exc}") from exc
+        hint = (
+            ""
+            if allow_model_download
+            else "; if the model is not cached locally, pass --allow-model-download to fetch it"
+        )
+        raise IngestError(f"local ASR initialization failed: {exc}{hint}") from exc
     try:
         result = backend.transcribe(audio, language=language)
     except Exception as exc:
@@ -491,7 +503,7 @@ def _transcribe_with_asr(model: str, audio: Path, language: str | None) -> Trans
         raise IngestError("local ASR produced no non-empty segments")
     provenance = {
         "kind": "faster_whisper",
-        "model": result.model,
+        "model": asr.model_identifier(result.model),
         "library_version": result.library_version,
         "compute_type": result.compute_type,
         "detected_language": result.language,
@@ -503,10 +515,18 @@ def _transcribe_with_asr(model: str, audio: Path, language: str | None) -> Trans
         method="faster_whisper",
         backend=provenance,
         evidence_limit="local ASR-generated text; Lectern makes no transcript faithfulness claim",
-        remote_services=_remote_services(transcriber_network_posture="local_inference"),
+        remote_services=_remote_services(
+            transcriber_network_posture=(
+                "local_inference_model_download_allowed"
+                if allow_model_download
+                else "local_inference_cached_model_only"
+            ),
+            lectern_invoked=allow_model_download,
+        ),
         identity={
             "method": "faster_whisper",
             "backend": provenance,
+            "allow_model_download": allow_model_download,
             "segments": [segment.to_dict() for segment in segments],
         },
         language=result.language,
@@ -821,11 +841,13 @@ def _transcript_metadata(
     }
 
 
-def _remote_services(*, transcriber_network_posture: str) -> dict[str, Any]:
+def _remote_services(
+    *, transcriber_network_posture: str, lectern_invoked: bool = False
+) -> dict[str, Any]:
     return {
         "allowed": False,
         "scope": "lectern_core",
-        "lectern_invoked": False,
+        "lectern_invoked": lectern_invoked,
         "requires_explicit_per_item_consent": True,
         "transcriber_network_posture": transcriber_network_posture,
     }

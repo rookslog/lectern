@@ -70,17 +70,33 @@ def _pcm16_mono_samples(audio: Path) -> _NumpyArray:
 
 
 class _WhisperModule(Protocol):
-    def WhisperModel(self, model: str, *, device: str, compute_type: str) -> _WhisperModel: ...
+    def WhisperModel(
+        self, model: str, *, device: str, compute_type: str, local_files_only: bool
+    ) -> _WhisperModel: ...
+
+
+def model_identifier(model: str) -> str:
+    """Keep model provenance useful without recording a local filesystem path."""
+
+    path = Path(model.replace("\\", "/")).expanduser()
+    if "/" in model or "\\" in model or path.is_dir():
+        return f"local:{path.name or path.resolve().name}"
+    return model
 
 
 class FasterWhisperBackend:
-    """CPU/int8 inference; faster-whisper may fetch weights on first real use."""
+    """CPU/int8 inference; fetching model weights requires explicit opt-in."""
 
-    def __init__(self, model: str = "small") -> None:
+    def __init__(self, model: str = "small", *, allow_model_download: bool = False) -> None:
         module = cast(_WhisperModule, importlib.import_module("faster_whisper"))
         self.model = model
         self.compute_type = "int8"
-        self._model = module.WhisperModel(model, device="cpu", compute_type=self.compute_type)
+        self._model = module.WhisperModel(
+            model,
+            device="cpu",
+            compute_type=self.compute_type,
+            local_files_only=not allow_model_download,
+        )
         try:
             self.library_version = version("faster-whisper")
         except PackageNotFoundError:
@@ -105,5 +121,5 @@ class FasterWhisperBackend:
         )
 
 
-def create_asr_backend(model: str = "small") -> ASRBackend:
-    return FasterWhisperBackend(model)
+def create_asr_backend(model: str = "small", *, allow_model_download: bool = False) -> ASRBackend:
+    return FasterWhisperBackend(model, allow_model_download=allow_model_download)
