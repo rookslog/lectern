@@ -512,6 +512,30 @@ class AutomationStateStore:
         except (ValueError, RecursionError) as exc:
             raise AutomationError(str(exc)) from exc
 
+    def get_registered_evidence(self, bundle_id: str) -> SelectedEvidence:
+        """Read a registered bundle's selected evidence without deriving library status.
+
+        Status derivation rehashes every declared artifact, including normalized
+        audio; enriching search hits with a timestamp and title must not reread
+        each matching talk's media. Integrity of the selected files is still checked.
+        """
+
+        row = self._connection.execute(
+            "SELECT bundle_path FROM library_bundles WHERE bundle_id = ?", (bundle_id,)
+        ).fetchone()
+        if row is None:
+            raise AutomationError(f"bundle not found in library: {bundle_id}")
+        bundle_path = Path(str(row[0]))
+        try:
+            manifest = _load_registered_manifest(bundle_id, bundle_path)
+            evidence = read_selected_evidence(
+                bundle_path, manifest, require_manifest_integrity=True
+            )
+            _assert_registered_source_identity(evidence.source, manifest)
+            return evidence
+        except (ValueError, RecursionError) as exc:
+            raise AutomationError(str(exc)) from exc
+
     def get_library_evidence(
         self, bundle_id: str, *, require_ready: bool = False
     ) -> SelectedEvidence:

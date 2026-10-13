@@ -585,11 +585,12 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
         "transcript": manifest.stages[StageName.TRANSCRIBE].state is StageState.DONE,
         "visual": manifest.stages[StageName.VISUAL].state is StageState.DONE,
     }
+    title = redact_paths(manifest.source.title or "Untitled talk")
     payload = {
         "bundle": bundle.to_dict(),
         "manifest": manifest.model_dump(mode="json"),
         "bundle_id": bundle.bundle_id,
-        "title": redact_paths(manifest.source.title or "Untitled talk"),
+        "title": title,
         "status": bundle.status.value,
         "created_at": bundle.created_at,
         "source_kind": source_kind,
@@ -605,7 +606,7 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
     else:
         print(
             f"Bundle: {bundle.bundle_id}\n"
-            f"Title: {payload['title']}\n"
+            f"Title: {_plain_search_field(title)}\n"
             f"Status: {bundle.status.value}\n"
             f"Created: {bundle.created_at}\n"
             f"Source kind: {source_kind}\n"
@@ -650,15 +651,25 @@ def _transcript(args: Sequence[str]) -> int:
                 "bundle_id": bundle_id,
                 "title": title,
                 "segments": [
-                    {"id": s.id, "start_s": s.start_s, "end_s": s.end_s, "text": s.text}
+                    {
+                        "id": s.id,
+                        "start_s": s.start_s,
+                        "end_s": s.end_s,
+                        "text": redact_paths(s.text),
+                    }
                     for s in segments
                 ],
             }
         )
     else:
         if output_format == "md":
-            print(f"# {title}\n")
-        print("\n\n".join(f"[{format_time(s.start_s)}] (#{s.id}) {s.text}" for s in segments))
+            print(f"# {_plain_search_field(title)}\n")
+        print(
+            "\n\n".join(
+                f"[{format_time(s.start_s)}] (#{s.id}) {_plain_search_field(redact_paths(s.text))}"
+                for s in segments
+            )
+        )
     return 0
 
 
@@ -754,7 +765,7 @@ def _library_search(args: Sequence[str], state_path: Path, json_output: bool) ->
         for hit in hits:
             if hit.bundle_id not in evidence_by_bundle:
                 try:
-                    evidence_by_bundle[hit.bundle_id] = state.get_library_evidence(hit.bundle_id)
+                    evidence_by_bundle[hit.bundle_id] = state.get_registered_evidence(hit.bundle_id)
                 except (AutomationError, OSError):
                     evidence_by_bundle[hit.bundle_id] = None
             evidence = evidence_by_bundle[hit.bundle_id]
