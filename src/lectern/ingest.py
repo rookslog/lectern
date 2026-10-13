@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from lectern.asr import create_asr_backend
+from lectern import asr
 from lectern.bundle import (
     ArtifactRef,
     Manifest,
@@ -474,7 +474,7 @@ def _caption_segments(transcript: str, kind: str) -> tuple[TranscriptSegment, ..
 
 def _transcribe_with_asr(model: str, audio: Path, language: str | None) -> TranscriptResult:
     try:
-        backend = create_asr_backend(model)
+        backend = asr.create_asr_backend(model)
     except ImportError as exc:
         raise IngestError(ASR_INSTALL_HINT) from exc
     except Exception as exc:

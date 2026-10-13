@@ -134,7 +134,7 @@ def test_builtin_asr_records_fake_backend_and_detected_language(
                 compute_type="int8",
             )
 
-    monkeypatch.setattr("lectern.ingest.create_asr_backend", FakeBackend)
+    monkeypatch.setattr("lectern.asr.create_asr_backend", FakeBackend)
     media = _media(tmp_path)
     assert (
         cli.main(
@@ -203,7 +203,7 @@ def test_missing_asr_extra_names_install_fix(
     def unavailable(model: str) -> None:
         raise ImportError("faster_whisper unavailable")
 
-    monkeypatch.setattr("lectern.ingest.create_asr_backend", unavailable, raising=False)
+    monkeypatch.setattr("lectern.asr.create_asr_backend", unavailable, raising=False)
     assert (
         cli.main(
             [

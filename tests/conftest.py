@@ -83,4 +83,4 @@ def deny_real_asr_models(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
     def unavailable(model: str) -> None:
         raise ImportError("real ASR models are disabled in unit tests; inject a fake backend")
 
-    monkeypatch.setattr("lectern.ingest.create_asr_backend", unavailable)
+    monkeypatch.setattr("lectern.asr.create_asr_backend", unavailable)
