@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from lectern.bundle import StageName, StageRecord, StageState
 from lectern.evidence import read_frames, read_transcript_metadata
@@ -112,27 +112,43 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
                 },
             }
         )
-    return {
-        "packet": "lectern.talk-packet",
-        "packet_version": "0.1",
-        "stability": "experimental",
-        "bundle_id": redact_paths(bundle_id),
-        "source": source_facts,
-        "layers": layers,
-        "segments": segments,
-        "frames": []
-        if visual is None
-        else [
-            {
-                "index": frame.index,
-                "t_s": frame.t_s,
-                "file": frame.file,
-                "reason": frame.reason,
-                "cite": f"[t={format_time(frame.t_s)} {short_id}#f{frame.index}]",
-            }
-            for frame in visual.root
-        ],
-    }
+    # Project every string in the packet, not a list of fields: a free-form field
+    # added or spread later (e.g. a migrated segment's `source`) must not carry a
+    # path outward. Hashes were taken over the original text above.
+    return _redact_strings(
+        {
+            "packet": "lectern.talk-packet",
+            "packet_version": "0.1",
+            "stability": "experimental",
+            "bundle_id": bundle_id,
+            "source": source_facts,
+            "layers": layers,
+            "segments": segments,
+            "frames": []
+            if visual is None
+            else [
+                {
+                    "index": frame.index,
+                    "t_s": frame.t_s,
+                    "file": frame.file,
+                    "reason": frame.reason,
+                    "cite": f"[t={format_time(frame.t_s)} {cite_id}#f{frame.index}]",
+                }
+                for frame in visual.root
+            ],
+        }
+    )
+
+
+def _redact_strings(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_paths(value)
+    if isinstance(value, dict):
+        mapping = cast("dict[str, Any]", value)
+        return {key: _redact_strings(item) for key, item in mapping.items()}
+    if isinstance(value, list):
+        return [_redact_strings(item) for item in cast("list[Any]", value)]
+    return value
 
 
 def _stage_done(record: StageRecord | None) -> bool:

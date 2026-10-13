@@ -89,6 +89,19 @@ def test_json_packet_preserves_existing_anchors_and_reports_layers(
     assert layers["visual"]["present"] is False
     assert layers["speakers"]["present"] is True
 
+    # A migrated bundle's free-form segment `source` may hold a path; it must not leak.
+    read_evidence = state_module.AutomationStateStore.get_registered_evidence
+
+    def with_path_source(store: state_module.AutomationStateStore, wanted: str):  # noqa: ANN202
+        evidence = read_evidence(store, wanted)
+        evidence.segments.root[0].source = "/Users/someone/private/talk.wav"
+        return evidence
+
+    store_class = state_module.AutomationStateStore
+    with patch.object(store_class, "get_registered_evidence", with_path_source):
+        assert cli.main(args) == 0
+    assert "/Users/someone" not in capsys.readouterr().out
+
 
 def test_markdown_packet_instructs_agents_and_formats_citations(
     agent_bundle: tuple[Path, IngestResult], capsys: pytest.CaptureFixture[str]
