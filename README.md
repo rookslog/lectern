@@ -355,8 +355,11 @@ not rerun for the current segmenter version.
 - Local bundles can contain sensitive media-derived artifacts. Keep them out of
   commits and issue reports.
 - Bundle manifest compatibility is tied to the manifest `schema_version`. The
-  current manifest schema version is `1.0.0`; pre-release compatibility policy
-  is described in [SUPPORT.md](SUPPORT.md).
+  current manifest schema version is `1.1.0`, adding optional transcript
+  language/ASR backend metadata, external source metadata, and stage warnings.
+  `1.0.0` bundles remain readable without migration; later versions such as
+  `1.2.0` are refused. Pre-release compatibility policy is described in
+  [SUPPORT.md](SUPPORT.md).
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Security
 and privacy reporting guidance is in [SECURITY.md](SECURITY.md).

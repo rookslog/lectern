@@ -30,7 +30,8 @@ from pydantic import (
 
 from lectern.records import redact_paths
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
+_RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})")
 CONTENT_REF_PATTERN = r"^sha256:[0-9a-f]{64}$"
 _CONTENT_REF = re.compile(CONTENT_REF_PATTERN)
 
@@ -79,13 +80,13 @@ def _require_manifest_schema_version(schema: dict[str, object]) -> None:
 def schema_version_is_compatible(version: str) -> bool:
     """Whether this build can read a manifest declaring `version`.
 
-    The preview reader accepts exactly the schema it implements. Artifact models
-    reject unknown fields so privacy-sensitive data cannot be silently discarded;
-    claiming that a later same-major schema is readable would contradict that
-    strict validation as soon as the later schema added a field.
+    Schema 1.1.0 only adds optional fields, so 1.0.0 remains readable without
+    migration. All other versions, including later same-major schemas, are
+    refused. Artifact models still reject unknown fields rather than silently
+    discarding potentially privacy-sensitive data.
     """
 
-    return version == SCHEMA_VERSION
+    return version in {"1.0.0", SCHEMA_VERSION}
 
 
 def atomic_write_text(path: Path, text: str) -> Path:
@@ -183,7 +184,11 @@ class Source(ArtifactModel):
         # parsed Python values, where an ISO-8601 string is not a datetime. A
         # populated `published` (first written by info.json intake) therefore
         # failed every strict evidence read of its bundle.
+        # Only RFC 3339 date-times, as the exported schema declares (#93);
+        # fromisoformat alone would also accept plain or week dates and naive times.
         if isinstance(value, str):
+            if _RFC3339.fullmatch(value) is None:
+                raise ValueError("published must be an RFC 3339 date-time")
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
         return value
 
@@ -267,6 +272,9 @@ class Manifest(ArtifactModel):
     model_config = {"extra": "forbid", "json_schema_extra": _require_manifest_schema_version}
 
     def save(self, bundle_dir: Path) -> Path:
+        # Saving serializes every 1.1.0 field (defaults included), so a manifest
+        # loaded as 1.0.0 must not keep claiming 1.0.0 once rewritten (#93).
+        self.schema_version = SCHEMA_VERSION
         path = bundle_dir / MANIFEST_NAME
         return atomic_write_text(path, self.model_dump_json(indent=2) + "\n")
 

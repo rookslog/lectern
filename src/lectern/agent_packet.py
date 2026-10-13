@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from lectern.bundle import StageName, StageState
+from lectern.bundle import StageName, StageRecord, StageState
 from lectern.evidence import read_frames, read_transcript_metadata
 from lectern.keyframes import FRAME_EVIDENCE_LIMIT, FRAME_METHOD
 from lectern.readable import format_time, plain_field
@@ -23,7 +23,7 @@ _CITATION = re.compile(
     r"\[t=(?P<time>(?:[0-9]+:)?[0-5][0-9]:[0-5][0-9]) "
     r"(?P<bundle>[^\s\[\]#]+)#(?P<frame>f)?(?P<segment>[0-9]+)\]"
 )
-_CITATION_LIKE = re.compile(r"\[t=[^\[\]\r\n]*#[^\[\]\r\n]*\]")
+_CITATION_LIKE = re.compile(r"\[t=[^\[\]\r\n]*\]")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
 _LIST_MARKER = re.compile(r"^\s*(?:[-+*]|[0-9]+[.)])\s*$")
 _SETEXT = re.compile(r"^\s*(?:=+|-+)\s*$")
@@ -32,9 +32,15 @@ _SETEXT = re.compile(r"^\s*(?:=+|-+)\s*$")
 def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
     """Export only registered ready evidence; keep hashes over the original text."""
 
-    evidence = state.get_library_evidence(bundle_id, require_ready=True)
-    short_id = bundle_id.rsplit("-", 1)[-1]
-    bundle = state.get_library_bundle(bundle_id)
+    bundle = state.get_library_bundle(bundle_id)  # derives readiness once
+    if bundle.status is not LibraryStatus.READY:
+        raise AutomationError(f"bundle {bundle_id} is {bundle.status.value}; requires ready")
+    evidence = state.get_registered_evidence(bundle_id)
+    # Only an ingest-shaped id (`<slug>-<12 hex>`) has a short form the checker can
+    # expand; anything else (e.g. a migrated id) is cited by its full, projected id.
+    suffix = bundle_id.rsplit("-", 1)[-1]
+    short_id = suffix if "-" in bundle_id and _SHORT_ID.fullmatch(suffix) else None
+    cite_id = short_id if short_id is not None else redact_paths(bundle_id)
     manifest = state.get_library_manifest(bundle_id)
     metadata = read_transcript_metadata(Path(bundle.bundle_path), manifest, evidence.source)
     visual = read_frames(Path(bundle.bundle_path), manifest)
@@ -52,7 +58,7 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
         }
     layers: dict[str, Any] = {
         "transcript": {
-            "present": manifest.stages[StageName.TRANSCRIBE].state is StageState.DONE,
+            "present": _stage_done(manifest.stages.get(StageName.TRANSCRIBE)),
             "method": redact_paths(metadata.method),
             "language": None if metadata.language is None else redact_paths(metadata.language),
             "evidence_limit": redact_paths(metadata.evidence_limit),
@@ -60,12 +66,14 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
         }
     }
     for name, stage in (("visual", StageName.VISUAL), ("speakers", StageName.DIARIZE)):
-        record = manifest.stages[stage]
-        present = record.state is StageState.DONE
+        record = manifest.stages.get(stage)
+        present = _stage_done(record)
         layers[name] = {"present": present}
         if not present:
             layers[name]["reason"] = (
-                redact_paths(record.warnings[0])
+                "not recorded"
+                if record is None
+                else redact_paths(record.warnings[0])
                 if name == "visual" and record.warnings
                 else "not processed"
                 if record.state is StageState.PENDING
@@ -100,7 +108,7 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
                         },
                         {"type": "quote", "exact": redact_paths(segment.text)},
                     ],
-                    "cite": redact_paths(f"{anchor.rendered()[:-1]} {short_id}#{segment.id}]"),
+                    "cite": redact_paths(f"{anchor.rendered()[:-1]} {cite_id}#{segment.id}]"),
                 },
             }
         )
@@ -125,6 +133,10 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
             for frame in visual.root
         ],
     }
+
+
+def _stage_done(record: StageRecord | None) -> bool:
+    return record is not None and record.state is StageState.DONE
 
 
 def packet_markdown(packet: dict[str, Any]) -> str:

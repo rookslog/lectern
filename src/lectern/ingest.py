@@ -885,6 +885,7 @@ def _info_string(payload: dict[str, Any], key: str) -> str | None:
         return None
     if not isinstance(value, str):
         raise ValueError("metadata text must be a string")
+    value.encode("utf-8")
     return value.strip() or None
 
 
@@ -898,9 +899,27 @@ def _source_with_info(source: Source, captured: bytes | None) -> tuple[Source, t
         if not isinstance(raw, dict):
             raise ValueError("metadata must be an object")
         payload = cast(dict[str, Any], raw)
-        title = _info_string(payload, "title")
-        channel = _info_string(payload, "channel") or _info_string(payload, "uploader")
-        upload_date = _info_string(payload, "upload_date")
+        # Validate every allowlisted string, including alternatives shadowed by
+        # another field. JSON permits lone surrogates; our UTF-8 artifacts do not.
+        text = {
+            key: _info_string(payload, key)
+            for key in (
+                "title",
+                "channel",
+                "uploader",
+                "upload_date",
+                "extractor_key",
+                "id",
+                "webpage_url",
+                "playlist_id",
+                "playlist_title",
+                "playlist",
+                "language",
+            )
+        }
+        title = text["title"]
+        channel = text["channel"] or text["uploader"]
+        upload_date = text["upload_date"]
         published = None
         if upload_date is not None:
             if re.fullmatch(r"[0-9]{8}", upload_date) is None:
@@ -914,15 +933,13 @@ def _source_with_info(source: Source, captured: bytes | None) -> tuple[Source, t
             if not math.isfinite(duration) or duration < 0:
                 raise ValueError("metadata duration must be finite and nonnegative")
         external = ExternalSource(
-            provider=_info_string(payload, "extractor_key"),
-            id=_info_string(payload, "id"),
-            url=_info_string(payload, "webpage_url"),
-            playlist_id=_info_string(payload, "playlist_id"),
-            playlist_title=(
-                _info_string(payload, "playlist_title") or _info_string(payload, "playlist")
-            ),
+            provider=text["extractor_key"],
+            id=text["id"],
+            url=text["webpage_url"],
+            playlist_id=text["playlist_id"],
+            playlist_title=text["playlist_title"] or text["playlist"],
             playlist_index=payload.get("playlist_index"),
-            language_hint=_info_string(payload, "language"),
+            language_hint=text["language"],
         )
         updated = source.model_copy(
             update={
