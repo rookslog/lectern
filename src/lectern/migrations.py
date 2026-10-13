@@ -18,11 +18,11 @@ from typing import Any, Literal, cast
 
 from lectern.bundle import (
     MANIFEST_NAME,
-    SCHEMA_VERSION,
     Manifest,
     SourceKind,
     TranscriptMetadataDocument,
     atomic_write_text,
+    schema_version_is_compatible,
 )
 from lectern.evidence import read_selected_evidence
 from lectern.records import redact_paths
@@ -444,11 +444,12 @@ def _validate_target(
     expected_bundle_id: str,
     source_sha256: str,
     source_bytes: int,
+    schema_version: str = TARGET_SCHEMA_VERSION,
 ) -> Manifest:
     _assert_no_symlinks(target, "target")
     manifest_text, manifest_raw = _read_object_with_text(target / MANIFEST_NAME, "target manifest")
-    if manifest_raw.get("schema_version") != TARGET_SCHEMA_VERSION:
-        raise MigrationError("target manifest does not declare schema 1.0.0")
+    if manifest_raw.get("schema_version") != schema_version:
+        raise MigrationError(f"target manifest does not declare schema {schema_version}")
     stages = manifest_raw.get("stages")
     if isinstance(stages, dict):
         for stage in cast(dict[str, Any], stages).values():
@@ -565,8 +566,8 @@ def _validate_prepared_target(
 
 
 def prepare_bundle_migration(bundle_dir: Path) -> PreparedBundleMigration:
-    if SCHEMA_VERSION != TARGET_SCHEMA_VERSION:
-        raise RuntimeError("migration target and manifest schema version disagree")
+    if not schema_version_is_compatible(TARGET_SCHEMA_VERSION):
+        raise RuntimeError("migration target is not readable by this build")
     source = _source_path(bundle_dir)
     _assert_no_symlinks(source, "source")
     if _role_exists(source / MARKER_NAME, "source migration marker"):
@@ -795,6 +796,7 @@ def _validate_current(bundle: Path) -> tuple[Manifest, str, int]:
         expected_bundle_id=bundle_id,
         source_sha256=source_sha256,
         source_bytes=source_bytes,
+        schema_version=raw["schema_version"],
     )
     return manifest, source_sha256, source_bytes
 
@@ -844,7 +846,7 @@ def migrate_bundle(bundle_dir: Path) -> BundleMigrationResult:
             raise MigrationError("source role is occupied by a non-directory")
         _assert_no_symlinks(source, "source")
         version = _current_version(source, "source")
-        if version == TARGET_SCHEMA_VERSION:
+        if schema_version_is_compatible(version):
             if _role_exists(staging, "staging role"):
                 raise MigrationError("staging role is occupied beside a current source role")
             manifest, current_sha256, current_bytes = _validate_current(source)
@@ -880,8 +882,8 @@ def migrate_bundle(bundle_dir: Path) -> BundleMigrationResult:
                 _clear_marker(source)
             return BundleMigrationResult(
                 bundle_id=manifest.bundle_id,
-                source_version=TARGET_SCHEMA_VERSION,
-                target_version=TARGET_SCHEMA_VERSION,
+                source_version=version,
+                target_version=version,
                 outcome="recovered" if marker_exists else "already_current",
                 backup_retained=backup_exists,
             )

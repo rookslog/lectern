@@ -23,22 +23,29 @@ automation state schema version are separate.
   automation store (sources, discovery queue, and library index).
 
 The current package version is `0.0.1`. The current manifest schema version is
-`1.0.0`. The current automation state schema version is `3`.
+`1.1.0`. The current automation state schema version is `3`.
 
 Before a stable release, CLI flags and command output may change. Bundle schema
 changes are treated more carefully. Version increments classify changes:
 additive bundle manifest changes should raise the manifest schema minor version,
 and breaking changes require a major schema version plus migration notes. The
-current preview reader accepts only the exact manifest schema version it
-implements. It does not claim forward compatibility with later same-major
+current preview reader accepts manifest versions `1.0.0` and `1.1.0` without
+migration. It does not claim forward compatibility with later same-major
 schemas: strict artifact validation rejects undeclared fields rather than
 silently discarding data, including privacy-sensitive data. Reading a later
 schema therefore requires an updated reader or an explicitly documented
 migration path.
 
+Manifest `1.1.0` adds optional transcript metadata `language` and ASR backend
+model, library version, compute type, detected language, and language probability
+fields, plus optional `source.external` identity/playlist metadata and stage
+`warnings` arrays. New bundles declare `1.1.0`; `1.0.0` bundles remain readable
+because they are a subset of this additive contract. All other versions,
+including `1.2.0`, are refused by the reader; `0.1.0` still requires migration.
+
 The current `0.1.0` to `1.0.0` bundle procedure is documented in
 [docs/MIGRATIONS.md](docs/MIGRATIONS.md). Manifest `1.0.0` does not mean the
-Lectern package has reached `1.0.0`.
+Lectern package has reached `1.0.0`; that legacy migration target stays unchanged.
 
 The pre-release `1.0.0` contract requires nonblank transcript segment text:
 at least one character must fall outside Python's Unicode whitespace set.

@@ -152,11 +152,19 @@ def test_changed_info_json_refuses_approved_queue_ingest(tmp_path: Path) -> None
             state.ingest_queue_item(rescanned.id, tmp_path / "bundles")
 
 
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        '{"http_headers": "PRIVATE-SENTINEL", bad json',
+        json.dumps({"title": "\ud800", "http_headers": "PRIVATE-SENTINEL"}),
+    ],
+    ids=["invalid-json", "lone-surrogate"],
+)
 def test_malformed_info_json_warns_and_keeps_filename_title(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], metadata: str
 ) -> None:
     media = _media(tmp_path / "inbox", "broken_metadata")
-    media.with_suffix(".info.json").write_text('{"http_headers": "PRIVATE-SENTINEL", bad json')
+    media.with_suffix(".info.json").write_text(metadata)
     result = ingest_local(media, tmp_path / "direct-bundles")
     assert result.manifest.source.title == "Broken Metadata"
     assert result.manifest.source.external is None

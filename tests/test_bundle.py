@@ -38,12 +38,12 @@ def make_manifest() -> Manifest:
     )
 
 
-def test_manifest_schema_is_one_zero() -> None:
-    assert SCHEMA_VERSION == "1.0.0"
+def test_manifest_schema_is_one_one() -> None:
+    assert SCHEMA_VERSION == "1.1.0"
 
 
-@pytest.mark.parametrize("version", ["0.1.0", "1.0.1", "1.1.0", "2.0.0", "1", "garbage"])
-def test_manifest_schema_compatibility_requires_the_exact_version(version: str) -> None:
+@pytest.mark.parametrize("version", ["0.1.0", "1.0.1", "1.2.0", "2.0.0", "1", "garbage"])
+def test_manifest_schema_compatibility_requires_a_supported_version(version: str) -> None:
     assert not schema_version_is_compatible(version)
 
 
@@ -55,11 +55,11 @@ def test_manifest_load_refuses_a_later_minor_before_artifact_validation(tmp_path
     manifest = make_manifest()
     path = manifest.save(tmp_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["schema_version"] = "1.1.0"
-    payload["optional_1_1_field"] = "unknown to the 1.0.0 model"
+    payload["schema_version"] = "1.2.0"
+    payload["optional_1_2_field"] = "unknown to the 1.1.0 model"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="unsupported bundle schema version '1.1.0'"):
+    with pytest.raises(ValueError, match="unsupported bundle schema version '1.2.0'"):
         Manifest.load(tmp_path)
 
 

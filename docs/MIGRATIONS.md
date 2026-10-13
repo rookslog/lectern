@@ -1,5 +1,19 @@
 # Bundle migrations
 
+## Manifest `1.0.0` and `1.1.0` compatibility
+
+New bundles declare `1.1.0`. This minor version only adds optional transcript
+language/ASR backend metadata, external source metadata, and stage warnings, so
+`1.0.0` bundles remain readable without migration. Readers accept exactly these
+two versions, not later same-major versions such as `1.2.0`.
+
+`lectern migrate BUNDLE` on a valid `1.0.0` bundle is a validated no-op: it
+preserves the version stamp and evidence and reports `already_current` in JSON,
+with the message "already readable; 1.0.0 is a subset of 1.1.0" on stderr.
+Valid `1.1.0` bundles also receive a validated no-op. Keeping the established
+`0.1.0` to `1.0.0` target preserves its backup, staging, and recovery contract;
+there is no new migration or evidence rewrite for optional fields.
+
 ## Manifest `0.1.0` to `1.0.0`
 
 Run `lectern migrate BUNDLE` while no other Lectern process is writing that
