@@ -11,13 +11,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+asr = ["faster-whisper>=1.0"]
 dev = [
     "pytest>=8",
     "ruff>=0.4",
     "pyright>=1.1.360",
 ]
-# Stage dependencies land with their milestones (M1+): yt-dlp, faster-whisper,
-# mlx-whisper (macOS), scenedetect, etc. Diarization is the `diarize` extra (gated weights).
+# Local timed ASR is optional via `asr`. Other stage dependencies land with their
+# milestones: yt-dlp, mlx-whisper (macOS), scenedetect, and gated diarization weights.
 
 [project.scripts]
 lectern = "lectern.cli:main"

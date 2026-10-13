@@ -67,3 +67,20 @@ def deny_network_by_default(
     monkeypatch.setattr(socket, "socket", refuse)
     monkeypatch.setattr(socket, "create_connection", refuse)
     yield
+
+
+@pytest.fixture(autouse=True)
+def deny_real_asr_models(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit tests never construct a real model, even when the ASR extra is installed.
+
+    Network denial alone would still allow cached weights to run. Acceptance
+    tests may replace this unavailable factory with a synthetic backend.
+    """
+
+    if may_use_network(request):
+        return
+
+    def unavailable(model: str) -> None:
+        raise ImportError("real ASR models are disabled in unit tests; inject a fake backend")
+
+    monkeypatch.setattr("lectern.ingest.create_asr_backend", unavailable)

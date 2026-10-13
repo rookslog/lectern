@@ -1,17 +1,17 @@
 """Local ingest pipeline for early Lectern milestones.
 
-M3 keeps Lectern local-first and dependency-light. Synthetic fixtures can still
-use a committed transcript sidecar. Non-fixture media can opt into a local
-command transcriber that returns JSON; Lectern does not ship or call remote ASR
-providers in this milestone.
+Captions and plain transcript sidecars use captured local bytes. Without a
+sidecar, transcription uses an explicit command or the optional local ASR extra.
 """
 
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import math
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -19,11 +19,12 @@ import tempfile
 import wave
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from lectern.asr import create_asr_backend
 from lectern.bundle import (
     ArtifactRef,
     Manifest,
@@ -34,12 +35,17 @@ from lectern.bundle import (
     StageState,
 )
 from lectern.records import AutomationError, approval_digest
-from lectern.sources.local import transcript_sidecar_path
+from lectern.sources.local import caption_sidecar_language, transcript_sidecar_path
 
 CANONICAL_SAMPLE_RATE = 16_000
 CANONICAL_CHANNELS = 1
 CANONICAL_SAMPLE_WIDTH = 2
 DEFAULT_TRANSCRIBER_TIMEOUT_S = 300
+ASR_INSTALL_HINT = (
+    "no local transcription backend is configured for this file; "
+    "install with pip install 'lectern[asr]' or uv sync --extra asr, "
+    "pass --transcriber-command, or add a caption/.transcript.txt sidecar"
+)
 
 
 class IngestError(RuntimeError):
@@ -91,6 +97,7 @@ class TranscriptResult:
     remote_services: dict[str, Any]
     identity: dict[str, Any]
     sidecar: dict[str, Any] | None = None
+    language: str | None = None
 
     @property
     def identity_component(self) -> str:
@@ -112,11 +119,19 @@ class PreparedLocalIngest:
     _media_path: Path
     _sidecar_payload: bytes | None
     _command: str | None
+    _sidecar_path: Path | None
+    _asr_model: str
+    _language: str | None
 
     def planned_bundle_id(self) -> str | None:
         if self._command is not None or self._sidecar_payload is None:
             return None
-        transcript = _sidecar_transcript(self.original_path, self._sidecar_payload)
+        transcript = _with_language(
+            _sidecar_transcript(
+                self.original_path, self._sidecar_payload, sidecar_path=self._sidecar_path
+            ),
+            self._language,
+        )
         digest = _combined_digest(self.media_sha256, transcript.identity_component)
         return f"{_slug(self.original_path.stem)}-{digest[:12]}"
 
@@ -132,11 +147,21 @@ class PreparedLocalIngest:
             _normalize_to_canonical_wav(self._media_path, audio_path)
             source_duration = _wav_duration_seconds(audio_path)
 
-            transcript = (
-                _transcribe_with_local_command(self._command, audio_path, source_duration)
-                if self._command is not None
-                else _sidecar_transcript(source, self._sidecar_payload, source_duration)
-            )
+            if self._command is not None:
+                transcript = _transcribe_with_local_command(
+                    self._command, audio_path, source_duration
+                )
+                if self._sidecar_path is not None:
+                    transcript = _with_language(
+                        transcript, caption_sidecar_language(source, self._sidecar_path)
+                    )
+            elif self._sidecar_payload is not None:
+                transcript = _sidecar_transcript(
+                    source, self._sidecar_payload, source_duration, sidecar_path=self._sidecar_path
+                )
+            else:
+                transcript = _transcribe_with_asr(self._asr_model, audio_path, self._language)
+            transcript = _with_language(transcript, self._language)
 
             current_source_digest, current_source_size = _digest_and_size(source)
             if (current_source_digest, current_source_size) != (source_digest, source_size):
@@ -216,6 +241,8 @@ def prepare_local_ingest(
     source_path: Path,
     *,
     transcriber_command: str | None = None,
+    asr_model: str = "small",
+    language: str | None = None,
     source_root: Path | None = None,
     expected_approval_sha256: str | None,
 ) -> Generator[PreparedLocalIngest]:
@@ -255,14 +282,22 @@ def prepare_local_ingest(
             _media_path=snapshot,
             _sidecar_payload=sidecar_payload,
             _command=command,
+            _sidecar_path=sidecar,
+            _asr_model=asr_model,
+            _language=language,
         )
 
 
-def plan_local_bundle_id(source_path: Path, transcriber_command: str | None = None) -> str:
+def plan_local_bundle_id(
+    source_path: Path, transcriber_command: str | None = None, *, language: str | None = None
+) -> str:
     """Return the bundle id for a private capture of the source and sidecar."""
 
     with prepare_local_ingest(
-        source_path, transcriber_command=transcriber_command, expected_approval_sha256=None
+        source_path,
+        transcriber_command=transcriber_command,
+        language=language,
+        expected_approval_sha256=None,
     ) as prepared:
         if _explicit_transcriber_command(transcriber_command) is not None:
             raise IngestError(
@@ -271,8 +306,9 @@ def plan_local_bundle_id(source_path: Path, transcriber_command: str | None = No
         planned = prepared.planned_bundle_id()
         if planned is None:
             raise IngestError(
-                "no local transcription backend is configured for this file; "
-                "provide a .transcript.txt sidecar or pass --transcriber-command"
+                "no local transcription backend can be planned for this file; "
+                "bundle id for built-in ASR cannot be planned before transcription; "
+                "add a caption/.transcript.txt sidecar for deterministic planning"
             )
         return planned
 
@@ -283,7 +319,7 @@ def can_plan_local_bundle_id(source_path: Path, transcriber_command: str | None 
     source = source_path.expanduser()
     if _explicit_transcriber_command(transcriber_command) is not None:
         return False
-    return source.with_suffix(".transcript.txt").is_file()
+    return transcript_sidecar_path(source) is not None
 
 
 def ingest_local(
@@ -291,9 +327,15 @@ def ingest_local(
     output_root: Path = Path("bundles"),
     *,
     transcriber_command: str | None = None,
+    asr_model: str = "small",
+    language: str | None = None,
 ) -> IngestResult:
     with prepare_local_ingest(
-        source_path, transcriber_command=transcriber_command, expected_approval_sha256=None
+        source_path,
+        transcriber_command=transcriber_command,
+        asr_model=asr_model,
+        language=language,
+        expected_approval_sha256=None,
     ) as prepared:
         return prepared.ingest(output_root)
 
@@ -311,19 +353,46 @@ def _explicit_transcriber_command(transcriber_command: str | None) -> str | None
 
 
 def _sidecar_transcript(
-    source: Path, payload: bytes | None, duration_s: float | None = None
+    source: Path,
+    payload: bytes | None,
+    duration_s: float | None = None,
+    *,
+    sidecar_path: Path | None = None,
 ) -> TranscriptResult:
     if payload is None:
-        raise IngestError(
-            "no local transcription backend is configured for this file; "
-            "provide a .transcript.txt sidecar or pass --transcriber-command"
-        )
-    transcript_path = source.with_suffix(".transcript.txt")
+        raise IngestError(ASR_INSTALL_HINT)
+    transcript_path = sidecar_path or source.with_suffix(".transcript.txt")
     digest, size = hashlib.sha256(payload).hexdigest(), len(payload)
+    is_caption = transcript_path.suffix in (".vtt", ".srt")
     try:
-        transcript = payload.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n").strip()
+        transcript = (
+            payload.decode("utf-8-sig" if is_caption else "utf-8")
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .strip()
+        )
     except UnicodeDecodeError as exc:
-        raise IngestError(f"fixture transcript is not valid UTF-8: {transcript_path}") from exc
+        label = "caption" if is_caption else "fixture transcript"
+        raise IngestError(f"{label} is not valid UTF-8: {transcript_path}") from exc
+    if is_caption:
+        kind = transcript_path.suffix[1:]
+        segments = _caption_segments(transcript, kind)
+        language = caption_sidecar_language(source, transcript_path)
+        method = f"caption_sidecar_{kind}"
+        return TranscriptResult(
+            text="\n".join(segment.text for segment in segments),
+            segments=segments,
+            method=method,
+            backend={"kind": "sidecar", "sha256": digest, "sidecar_filename": transcript_path.name},
+            evidence_limit=(
+                "captions are third-party/auto-generated text; "
+                "Lectern records cue times but makes no transcript faithfulness claim"
+            ),
+            remote_services=_remote_services(transcriber_network_posture="not_applicable_sidecar"),
+            identity={"method": method, "sha256": digest, "sidecar_filename": transcript_path.name},
+            sidecar={"sha256": digest, "bytes": size},
+            language=language,
+        )
     if transcript:
         return TranscriptResult(
             text=transcript,
@@ -344,6 +413,104 @@ def _sidecar_transcript(
             sidecar={"sha256": digest, "bytes": size},
         )
     raise IngestError(f"fixture transcript is empty: {transcript_path}")
+
+
+def _with_language(transcript: TranscriptResult, language: str | None) -> TranscriptResult:
+    if language is None:
+        return transcript
+    return replace(
+        transcript, language=language, identity={**transcript.identity, "language": language}
+    )
+
+
+_CAPTION_TIME = r"(?:\d{2,}:)?\d{2}:\d{2}[.,]\d{3}"
+_CAPTION_TIMING = re.compile(rf"^({_CAPTION_TIME})\s+-->\s+({_CAPTION_TIME})(?:\s+.*)?$")
+
+
+def _caption_seconds(timestamp: str) -> float:
+    parts = timestamp.replace(",", ".").split(":")
+    seconds = float(parts[-1]) + int(parts[-2]) * 60
+    return seconds + (int(parts[0]) * 3600 if len(parts) == 3 else 0)
+
+
+def _caption_segments(transcript: str, kind: str) -> tuple[TranscriptSegment, ...]:
+    segments: list[TranscriptSegment] = []
+    previous_last_line = ""
+    for block in re.split(r"\n[ \t]*\n", transcript):
+        lines = block.strip().splitlines()
+        if not lines or re.match(r"^(?:WEBVTT|NOTE|STYLE|REGION)(?:\s|$)", lines[0]):
+            continue
+        timing_index = next((i for i, line in enumerate(lines) if "-->" in line), None)
+        if timing_index is None:
+            continue
+        timing = _CAPTION_TIMING.fullmatch(lines[timing_index].strip())
+        if timing is None:
+            raise IngestError("caption cue has invalid timing")
+        start_s, end_s = (_caption_seconds(value) for value in timing.groups())
+        if end_s < start_s:
+            raise IngestError("caption cue end must not precede start")
+        cleaned_lines = [
+            " ".join(html.unescape(re.sub(r"<[^>]*>", "", line)).split())
+            for line in lines[timing_index + 1 :]
+        ]
+        cleaned_lines = [line for line in cleaned_lines if line]
+        if not cleaned_lines:
+            continue
+        text = "\n".join(cleaned_lines)
+        # YouTube emits the previous last line again at the start of the next
+        # cue, including brief repeat-only cues. Keep that line as the rolling
+        # reference even when stripping it leaves no new text.
+        if kind == "vtt" and previous_last_line and text.startswith(previous_last_line):
+            text = text[len(previous_last_line) :].strip()
+        previous_last_line = cleaned_lines[-1]
+        if text:
+            segments.append(
+                TranscriptSegment(len(segments), start_s, end_s, text, f"caption_{kind}")
+            )
+    if not segments:
+        raise IngestError("caption sidecar has no non-empty timed cues")
+    return tuple(segments)
+
+
+def _transcribe_with_asr(model: str, audio: Path, language: str | None) -> TranscriptResult:
+    try:
+        backend = create_asr_backend(model)
+    except ImportError as exc:
+        raise IngestError(ASR_INSTALL_HINT) from exc
+    except Exception as exc:
+        raise IngestError(f"local ASR initialization failed: {exc}") from exc
+    try:
+        result = backend.transcribe(audio, language=language)
+    except Exception as exc:
+        raise IngestError(f"local ASR transcription failed: {exc}") from exc
+    segments = tuple(
+        TranscriptSegment(i, segment.start_s, segment.end_s, segment.text, "faster_whisper")
+        for i, segment in enumerate(result.segments)
+    )
+    if not segments:
+        raise IngestError("local ASR produced no non-empty segments")
+    provenance = {
+        "kind": "faster_whisper",
+        "model": result.model,
+        "library_version": result.library_version,
+        "compute_type": result.compute_type,
+        "detected_language": result.language,
+        "language_probability": result.language_probability,
+    }
+    return TranscriptResult(
+        text="\n".join(segment.text for segment in segments),
+        segments=segments,
+        method="faster_whisper",
+        backend=provenance,
+        evidence_limit="local ASR-generated text; Lectern makes no transcript faithfulness claim",
+        remote_services=_remote_services(transcriber_network_posture="local_inference"),
+        identity={
+            "method": "faster_whisper",
+            "backend": provenance,
+            "segments": [segment.to_dict() for segment in segments],
+        },
+        language=result.language,
+    )
 
 
 def _transcribe_with_local_command(
@@ -628,6 +795,7 @@ def _transcript_metadata(
         "schema": "lectern.transcript.metadata.v0",
         "generated_at": datetime.now(UTC).isoformat(),
         "method": transcript.method,
+        "language": transcript.language,
         "backend": transcript.backend,
         "remote_services": transcript.remote_services,
         "evidence_limit": transcript.evidence_limit,

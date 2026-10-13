@@ -6,6 +6,7 @@ item" is the media bytes plus any transcript sidecar beside them.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -139,9 +140,13 @@ def _transcript_sidecar_escapes_root(path: Path, root: Path) -> bool:
     function is what states the rule, so it is what should enforce it.
     """
 
-    sidecar = path.with_suffix(".transcript.txt")
-    if not sidecar.is_file():
+    sidecar = transcript_sidecar_path(path)
+    if sidecar is None:
         return False
+    return _sidecar_escapes_root(sidecar, root)
+
+
+def _sidecar_escapes_root(sidecar: Path, root: Path) -> bool:
     if sidecar.is_symlink():
         return True
     try:
@@ -152,12 +157,37 @@ def _transcript_sidecar_escapes_root(path: Path, root: Path) -> bool:
 
 
 def transcript_sidecar_path(path: Path, *, root: Path | None = None) -> Path | None:
-    sidecar = path.with_suffix(".transcript.txt")
-    if not sidecar.is_file():
+    """Select captions before plain text, identically for discovery and capture."""
+
+    exact = [path.with_suffix(suffix) for suffix in (".vtt", ".srt")]
+    tagged = sorted(
+        candidate
+        for candidate in path.parent.iterdir()
+        if caption_sidecar_language(path, candidate) is not None
+    )
+    sidecar = next(
+        (
+            candidate
+            for candidate in [*exact, *tagged, path.with_suffix(".transcript.txt")]
+            if candidate.is_file()
+        ),
+        None,
+    )
+    if sidecar is None:
         return None
-    if root is not None and _transcript_sidecar_escapes_root(path, root):
+    if root is not None and _sidecar_escapes_root(sidecar, root):
         raise AutomationError("transcript sidecar must be inside the source root")
     return sidecar
+
+
+def caption_sidecar_language(media: Path, sidecar: Path) -> str | None:
+    """Read a BCP-47-like filename tag, without interpreting it as diarization."""
+
+    match = re.fullmatch(
+        re.escape(media.stem) + r"\.([A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*)\.(?:vtt|srt)",
+        sidecar.name,
+    )
+    return match.group(1) if match is not None else None
 
 
 def approval_digest_and_media_size(path: Path, *, root: Path | None = None) -> tuple[str, int]:

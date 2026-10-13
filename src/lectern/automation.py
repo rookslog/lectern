@@ -305,6 +305,8 @@ class AutomationState(AutomationStateStore):
         output_root: Path,
         *,
         transcriber_command: str | None = None,
+        asr_model: str = "small",
+        language: str | None = None,
     ) -> IngestResult:
         queue_item = self.get_queue_item(queue_item_id)
         if queue_item.state is not QueueState.APPROVED:
@@ -323,6 +325,8 @@ class AutomationState(AutomationStateStore):
                     prepare_local_ingest(
                         source_path,
                         transcriber_command=transcriber_command,
+                        asr_model=asr_model,
+                        language=language,
                         source_root=root,
                         expected_approval_sha256=queue_item.content_sha256,
                     )
@@ -446,9 +450,15 @@ class AutomationState(AutomationStateStore):
         output_root: Path,
         *,
         transcriber_command: str | None = None,
+        asr_model: str = "small",
+        language: str | None = None,
     ) -> IngestResult:
         with prepare_local_ingest(
-            source_path, transcriber_command=transcriber_command, expected_approval_sha256=None
+            source_path,
+            transcriber_command=transcriber_command,
+            asr_model=asr_model,
+            language=language,
+            expected_approval_sha256=None,
         ) as prepared:
             planned_bundle_id = prepared.planned_bundle_id()
             source = self._ensure_one_shot_source(prepared.registry_path)
