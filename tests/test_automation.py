@@ -433,7 +433,8 @@ def test_queue_ingest_uses_local_transcriber_for_no_sidecar_source(tmp_path: Pat
         "unverifiable_user_command"
     )
     assert metadata["remote_services"]["lectern_invoked"] is False
-    assert "[t=00:04] Queue command transcript." in summary
+    assert "Time span: 00:04–00:05" in summary
+    assert "Queue command transcript." not in summary
 
 
 def test_retried_command_queue_ingest_same_output_returns_existing_bundle(

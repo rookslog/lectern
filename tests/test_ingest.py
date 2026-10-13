@@ -79,10 +79,8 @@ def test_local_ingest_acceptance_for_synthetic_talk(tmp_path: Path) -> None:
     ]
 
     summary = (bundle_dir / "analysis" / "summary.md").read_text(encoding="utf-8")
-    assert (
-        "[t=00:00] Lectern turns recorded talks into local inspectable knowledge bundles."
-        in summary
-    )
+    assert "Lectern does not summarize." in summary
+    assert reference not in summary
 
 
 def test_local_ingest_rejects_missing_source(tmp_path: Path) -> None:
@@ -186,7 +184,7 @@ def test_empty_wav_probe_returns_ingest_error(tmp_path: Path, monkeypatch: Monke
         ingest_local(empty, tmp_path / "bundles")
 
 
-def test_local_command_transcriber_produces_metadata_and_anchored_summary(
+def test_local_command_transcriber_produces_metadata_and_overview(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -239,7 +237,8 @@ def test_local_command_transcriber_produces_metadata_and_anchored_summary(
     assert metadata["schema_contract"]["manifest_schema_versioned"] is False
 
     summary = (bundle_dir / "analysis" / "summary.md").read_text(encoding="utf-8")
-    assert "[t=00:12] First anchored claim." in summary
+    assert "Time span: 00:12–00:21" in summary
+    assert "First anchored claim." not in summary
 
     manifest = Manifest.load(bundle_dir)
     transcribe_outputs = {output.path for output in manifest.stages[StageName.TRANSCRIBE].outputs}

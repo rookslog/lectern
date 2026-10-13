@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, NoReturn, Self, cast
 
 from lectern.bundle import Manifest, SourceDocument, StageState, TranscriptSegmentsDocument
-from lectern.evidence import read_selected_evidence
+from lectern.evidence import SelectedEvidence, read_selected_evidence
 from lectern.records import (
     LEGAL_QUEUE_TRANSITION_SOURCE_VALUES,
     LEGAL_QUEUE_TRANSITION_SOURCES,
@@ -502,6 +502,63 @@ class AutomationStateStore:
         if row is None:
             raise AutomationError(f"bundle not found in library: {bundle_id}")
         return _library_bundle_from_row(row, status=_library_status_from_row(row))
+
+    def get_library_manifest(self, bundle_id: str) -> Manifest:
+        """Load the manifest belonging to the registered bundle, not an arbitrary path.
+
+        Looks up only the registered path: deriving library status here would
+        rehash every declared artifact, including audio, once per call.
+        """
+
+        try:
+            return _load_registered_manifest(bundle_id, self._registered_bundle_path(bundle_id))
+        except (ValueError, RecursionError) as exc:
+            raise AutomationError(str(exc)) from exc
+
+    def _registered_bundle_path(self, bundle_id: str) -> Path:
+        row = self._connection.execute(
+            "SELECT bundle_path FROM library_bundles WHERE bundle_id = ?", (bundle_id,)
+        ).fetchone()
+        if row is None:
+            raise AutomationError(f"bundle not found in library: {bundle_id}")
+        return Path(str(row[0]))
+
+    def get_registered_evidence(self, bundle_id: str) -> SelectedEvidence:
+        """Read a registered bundle's selected evidence without deriving library status.
+
+        Status derivation rehashes every declared artifact, including normalized
+        audio; enriching search hits with a timestamp and title must not reread
+        each matching talk's media. Integrity of the selected files is still checked.
+        """
+
+        bundle_path = self._registered_bundle_path(bundle_id)
+        try:
+            manifest = _load_registered_manifest(bundle_id, bundle_path)
+            evidence = read_selected_evidence(
+                bundle_path, manifest, require_manifest_integrity=True
+            )
+            _assert_registered_source_identity(evidence.source, manifest)
+            return evidence
+        except (ValueError, RecursionError) as exc:
+            raise AutomationError(str(exc)) from exc
+
+    def get_library_evidence(
+        self, bundle_id: str, *, require_ready: bool = False
+    ) -> SelectedEvidence:
+        """Read declared, integrity-checked evidence with the registered identity policy."""
+
+        bundle = self.get_library_bundle(bundle_id)
+        if require_ready and bundle.status is not LibraryStatus.READY:
+            raise AutomationError(f"bundle {bundle_id} is {bundle.status.value}; requires ready")
+        try:
+            manifest = _load_registered_manifest(bundle_id, Path(bundle.bundle_path))
+            evidence = read_selected_evidence(
+                Path(bundle.bundle_path), manifest, require_manifest_integrity=True
+            )
+            _assert_registered_source_identity(evidence.source, manifest)
+            return evidence
+        except (ValueError, RecursionError) as exc:
+            raise AutomationError(str(exc)) from exc
 
     def _migrate(self) -> None:
         version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])

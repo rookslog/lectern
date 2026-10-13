@@ -313,9 +313,9 @@ def test_plain_search_escapes_row_controls_without_changing_evidence(
     assert cli.main(args) == 0
     plain = capsys.readouterr().out
     assert len(plain.splitlines()) == 1
-    assert plain.count("\t") == 2
+    assert plain.count("\t") == 3
     rendered_fields = plain.removesuffix("\n").split("\t")
-    rendered = rendered_fields[0 if field == "bundle_id" else 2]
+    rendered = rendered_fields[0 if field == "bundle_id" else 3]
     assert all(character not in rendered for character in controls)
     assert multilingual in rendered
     for escape in (
@@ -349,7 +349,9 @@ def test_plain_registered_search_without_controls_retains_existing_output(
     with open_state(state_path) as state:
         hits = state.search_segments("knowledge")
     assert hits
-    expected = "".join(f"{hit.bundle_id}\t{hit.segment_id}\t{hit.snippet}\n" for hit in hits)
+    expected = "".join(
+        f"{hit.bundle_id}\t{hit.segment_id}\t[00:00]\t{hit.snippet}\n" for hit in hits
+    )
     capsys.readouterr()
     assert cli.main(["library", "search", "knowledge", "--state", str(state_path)]) == 0
     assert capsys.readouterr().out == expected

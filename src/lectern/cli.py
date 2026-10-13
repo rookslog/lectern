@@ -23,9 +23,11 @@ from lectern.automation import (
     preflight_state_store,
     preflight_youtube_playlist,
 )
-from lectern.bundle import Manifest, export_artifact_schemas, export_json_schema
+from lectern.bundle import StageName, StageState, export_artifact_schemas, export_json_schema
+from lectern.evidence import SelectedEvidence
 from lectern.ingest import IngestError
 from lectern.migrations import MigrationError, migrate_bundle
+from lectern.readable import format_time
 from lectern.records import redact_paths
 
 # Commands that return stored data to a caller, and therefore must emit no
@@ -50,6 +52,7 @@ OUTWARD_COMMANDS = (
     "library show",
     "library search",
     "library cite",
+    "transcript",
     "migrate",
 )
 
@@ -63,6 +66,7 @@ commands:
   queue          inspect and update discovery queue items
   schema export  print or write the manifest JSON Schema
   sources        manage local source registry and scans
+  transcript     read a ready bundle's timestamped transcript
 """
 
 
@@ -576,11 +580,21 @@ def _library_list(args: Sequence[str], state_path: Path, json_output: bool) -> i
         return 2
     with open_state(state_path) as state:
         bundles = state.list_library()
+        titles: dict[str, str] = {}
+        if not json_output:
+            for bundle in bundles:
+                try:
+                    titles[bundle.bundle_id] = (
+                        state.get_library_manifest(bundle.bundle_id).source.title or "Untitled talk"
+                    )
+                except (AutomationError, OSError):
+                    titles[bundle.bundle_id] = "unknown"
     if json_output:
         _print_json({"bundles": [bundle.to_dict() for bundle in bundles]})
     else:
         for bundle in bundles:
-            print(f"{bundle.bundle_id}\t{bundle.created_at}\t{bundle.status.value}")
+            title = _plain_search_field(redact_paths(titles[bundle.bundle_id]))
+            print(f"{bundle.bundle_id}\t{bundle.created_at}\t{bundle.status.value}\t{title}")
     return 0
 
 
@@ -590,15 +604,104 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
         return 2
     with open_state(state_path) as state:
         bundle = state.get_library_bundle(args[0])
-    try:
-        manifest = Manifest.load(Path(bundle.bundle_path)).model_dump(mode="json")
-    except (ValueError, RecursionError) as exc:
-        raise AutomationError(str(exc)) from exc
-    payload = {"bundle": bundle.to_dict(), "manifest": manifest}
+        manifest = state.get_library_manifest(bundle.bundle_id)
+        try:
+            evidence = state.get_library_evidence(bundle.bundle_id)
+        except (AutomationError, OSError):
+            # Show remains an inspection command for non-ready bundles. Never
+            # derive transcript facts from evidence that failed strict checks.
+            evidence = None
+        source_kind = state.get_source(bundle.source_id).kind.value
+    segments = None if evidence is None else evidence.segments.root
+    layers = {
+        "transcript": manifest.stages[StageName.TRANSCRIBE].state is StageState.DONE,
+        "visual": manifest.stages[StageName.VISUAL].state is StageState.DONE,
+    }
+    title = redact_paths(manifest.source.title or "Untitled talk")
+    payload = {
+        "bundle": bundle.to_dict(),
+        "manifest": manifest.model_dump(mode="json"),
+        "bundle_id": bundle.bundle_id,
+        "title": title,
+        "status": bundle.status.value,
+        "created_at": bundle.created_at,
+        "source_kind": source_kind,
+        "duration_s": manifest.source.duration_s,
+        "transcript_method": None if evidence is None else evidence.source.transcript.method,
+        "segment_count": None if segments is None else len(segments),
+        "word_count": None if segments is None else sum(len(s.text.split()) for s in segments),
+        "layers": layers,
+        "bundle_dir": redact_paths(bundle.bundle_path),
+    }
     if json_output:
         _print_json(payload)
     else:
-        print(f"{bundle.bundle_id}\t{bundle.created_at}\t{bundle.status.value}")
+        print(
+            f"Bundle: {bundle.bundle_id}\n"
+            f"Title: {_plain_search_field(title)}\n"
+            f"Status: {bundle.status.value}\n"
+            f"Created: {bundle.created_at}\n"
+            f"Source kind: {source_kind}\n"
+            f"Duration: {format_time(manifest.source.duration_s, duration=True)}\n"
+            f"Transcript method: {payload['transcript_method'] or 'unknown'}\n"
+            f"Segments: {payload['segment_count'] if segments is not None else 'unknown'}\n"
+            f"Words: {payload['word_count'] if segments is not None else 'unknown'}\n"
+            f"Transcript: {'yes' if layers['transcript'] else 'no'}\n"
+            f"Visual: {'yes' if layers['visual'] else 'no'}\n"
+            f"Bundle directory: {payload['bundle_dir']}"
+        )
+    return 0
+
+
+def _transcript(args: Sequence[str]) -> int:
+    rest, state_path, json_flag = _parse_common(args)
+    output_format = "md"
+    if len(rest) == 3 and rest[1] == "--format":
+        output_format = rest[2]
+        rest = rest[:1]
+    if len(rest) != 1 or json_flag or output_format not in ("md", "txt", "json"):
+        print(
+            "usage: lectern transcript BUNDLE_ID [--format md|txt|json] [--state PATH]",
+            file=sys.stderr,
+        )
+        return 2
+    bundle_id = rest[0]
+    try:
+        with open_state(state_path) as state:
+            evidence = state.get_library_evidence(bundle_id, require_ready=True)
+    except AutomationError as exc:
+        print(f"transcript: {redact_paths(str(exc))}", file=sys.stderr)
+        return 3
+    except OSError as exc:
+        print(f"transcript: {redact_paths(str(exc))}", file=sys.stderr)
+        return 1
+    title = redact_paths(evidence.source.source.title or "Untitled talk")
+    segments = evidence.segments.root
+    if output_format == "json":
+        _print_json(
+            {
+                "bundle_id": bundle_id,
+                "title": title,
+                "segments": [
+                    {
+                        "id": s.id,
+                        "start_s": s.start_s,
+                        "end_s": s.end_s,
+                        "text": redact_paths(s.text),
+                    }
+                    for s in segments
+                ],
+            }
+        )
+    else:
+        if output_format == "md":
+            print(f"# {_plain_search_field(title)}\n")
+        print(
+            "\n\n".join(
+                f"[{format_time(s.start_s)}] (#{s.id}) {_plain_search_field(redact_paths(s.text))}"
+                for s in segments
+            )
+        )
     return 0
 
 
@@ -690,18 +793,44 @@ def _library_search(args: Sequence[str], state_path: Path, json_output: bool) ->
         except ValueError as exc:
             print(f"library: {exc}", file=sys.stderr)
             return 2
+        evidence_by_bundle: dict[str, SelectedEvidence | None] = {}
+        results: list[dict[str, Any]] = []
+        for hit in hits:
+            if hit.bundle_id not in evidence_by_bundle:
+                try:
+                    evidence_by_bundle[hit.bundle_id] = state.get_registered_evidence(hit.bundle_id)
+                except (AutomationError, OSError):
+                    evidence_by_bundle[hit.bundle_id] = None
+            evidence = evidence_by_bundle[hit.bundle_id]
+            segment = (
+                next((s for s in evidence.segments.root if s.id == hit.segment_id), None)
+                if evidence is not None
+                else None
+            )
+            results.append(
+                {
+                    **hit.to_dict(),
+                    "start_s": None if segment is None else segment.start_s,
+                    "title": (
+                        None
+                        if evidence is None
+                        else redact_paths(evidence.source.source.title or "")
+                    ),
+                }
+            )
     if json_output:
-        _print_json({"results": [hit.to_dict() for hit in hits]})
+        _print_json({"results": results})
     else:
         # No results is an answer, not an error. Saying so explicitly keeps
         # "nothing found" distinguishable from "search is broken", which silence
         # would not.
         if not hits:
             print("no matches")
-        for hit in hits:
-            bundle_id = _plain_search_field(hit.bundle_id)
-            snippet = _plain_search_field(hit.snippet)
-            print(f"{bundle_id}\t{hit.segment_id}\t{snippet}")
+        for result in results:
+            bundle_id = _plain_search_field(result["bundle_id"])
+            snippet = _plain_search_field(result["snippet"])
+            timestamp = format_time(result["start_s"])
+            print(f"{bundle_id}\t{result['segment_id']}\t[{timestamp}]\t{snippet}")
     return 0
 
 
@@ -762,6 +891,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args == ["--version"]:
             print(f"lectern {__version__}")
             return 0
+        if args == ["--help"]:
+            print(USAGE, end="")
+            return 0
         if args == ["doctor"]:
             return _doctor()
         if args and args[0] == "ingest":
@@ -770,6 +902,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _migrate_bundle(args[1:])
         if args and args[0] == "library":
             return _library(args[1:])
+        if args and args[0] == "transcript":
+            return _transcript(args[1:])
         if args and args[0] == "queue":
             return _queue(args[1:])
         if len(args) >= 2 and args[0] == "schema" and args[1] == "export":

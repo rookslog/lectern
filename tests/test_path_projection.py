@@ -45,6 +45,7 @@ OUTWARD_COMMANDS = (
     "library show",
     "library search",
     "library cite",
+    "transcript",
     "migrate",
 )
 
