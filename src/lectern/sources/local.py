@@ -1,7 +1,7 @@
 """Local-folder discovery: what a scan of a directory tree finds, and what it skips.
 
 Content addressing lives here too, because what a local scan considers "the same
-item" is the media bytes plus any transcript sidecar beside them.
+item" is the media bytes plus selected transcript and info sidecars beside them.
 """
 
 from __future__ import annotations
@@ -147,10 +147,8 @@ def _transcript_sidecar_escapes_root(
     function is what states the rule, so it is what should enforce it.
     """
 
-    sidecar = transcript_sidecar_path(path, caption_cache=caption_cache)
-    if sidecar is None:
-        return False
-    return _sidecar_escapes_root(sidecar, root)
+    sidecars = (transcript_sidecar_path(path, caption_cache=caption_cache), info_sidecar_path(path))
+    return any(sidecar is not None and _sidecar_escapes_root(sidecar, root) for sidecar in sidecars)
 
 
 def _sidecar_escapes_root(sidecar: Path, root: Path) -> bool:
@@ -214,13 +212,26 @@ def caption_sidecar_language(media: Path, sidecar: Path) -> str | None:
     return match.group(1) if match is not None else None
 
 
+def info_sidecar_path(path: Path, *, root: Path | None = None) -> Path | None:
+    """Select adjacent metadata under the same boundary as transcript sidecars."""
+
+    sidecar = path.with_suffix(".info.json")
+    if not sidecar.is_file():
+        return None
+    if root is not None and _sidecar_escapes_root(sidecar, root):
+        raise AutomationError("info sidecar must be inside the source root")
+    return sidecar
+
+
 def approval_digest_and_media_size(
     path: Path, *, root: Path | None = None, caption_cache: _CaptionCache | None = None
 ) -> tuple[str, int]:
     media_digest, media_size = digest_and_size(path)
     sidecar = transcript_sidecar_path(path, root=root, caption_cache=caption_cache)
     sidecar_digest = digest_and_size(sidecar)[0] if sidecar is not None else None
-    return approval_digest(media_digest, sidecar_digest), media_size
+    info = info_sidecar_path(path, root=root)
+    info_digest = digest_and_size(info)[0] if info is not None else None
+    return approval_digest(media_digest, sidecar_digest, info_digest), media_size
 
 
 class LocalFolderAdapter:

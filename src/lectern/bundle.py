@@ -145,6 +145,18 @@ class StageState(StrEnum):
     SKIPPED = "skipped"
 
 
+class ExternalSource(ArtifactModel):
+    """Allowlisted external identity from local metadata, never download details."""
+
+    provider: str | None = None
+    id: str | None = None
+    url: str | None = None
+    playlist_id: str | None = None
+    playlist_title: str | None = None
+    playlist_index: NonNegativeStrictInt | None = None
+    language_hint: str | None = None
+
+
 class Source(ArtifactModel):
     """Provenance. `local` sources trigger the privacy hard rule (ADR-0002)."""
 
@@ -162,6 +174,7 @@ class Source(ArtifactModel):
     channel: str | None = None
     published: datetime | None = None
     duration_s: FiniteFloat | None = None
+    external: ExternalSource | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -221,6 +234,7 @@ class StageRecord(ArtifactModel):
     finished: datetime | None = None
     outputs: list[ArtifactRef] = Field(default_factory=empty_artifact_refs)
     error: str | None = None
+    warnings: list[str] = Field(default_factory=list)
 
     model_config = {"validate_assignment": True}
 

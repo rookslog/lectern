@@ -27,6 +27,7 @@ from typing import Any, cast
 from lectern import asr
 from lectern.bundle import (
     ArtifactRef,
+    ExternalSource,
     Manifest,
     Source,
     SourceKind,
@@ -34,9 +35,13 @@ from lectern.bundle import (
     StageRecord,
     StageState,
 )
-from lectern.readable import format_time
+from lectern.readable import format_time, source_details
 from lectern.records import AutomationError, approval_digest
-from lectern.sources.local import caption_sidecar_language, transcript_sidecar_path
+from lectern.sources.local import (
+    caption_sidecar_language,
+    info_sidecar_path,
+    transcript_sidecar_path,
+)
 
 CANONICAL_SAMPLE_RATE = 16_000
 CANONICAL_CHANNELS = 1
@@ -68,6 +73,10 @@ class IngestResult:
 
     bundle_dir: Path
     manifest: Manifest
+
+    @property
+    def warnings(self) -> tuple[str, ...]:
+        return tuple(self.manifest.stages[StageName.ACQUIRE].warnings)
 
 
 @dataclass(frozen=True)
@@ -121,6 +130,7 @@ class PreparedLocalIngest:
     _sidecar_payload: bytes | None
     _command: str | None
     _sidecar_path: Path | None
+    _info_payload: bytes | None
     _asr_model: str
     _allow_model_download: bool
     _language: str | None
@@ -134,8 +144,14 @@ class PreparedLocalIngest:
             ),
             self._language,
         )
-        digest = _combined_digest(self.media_sha256, transcript.identity_component)
+        digest = self._bundle_digest(transcript)
         return f"{_slug(self.original_path.stem)}-{digest[:12]}"
+
+    def _bundle_digest(self, transcript: TranscriptResult) -> str:
+        components = [self.media_sha256, transcript.identity_component]
+        if self._info_payload is not None:
+            components.append(hashlib.sha256(self._info_payload).hexdigest())
+        return _combined_digest(*components)
 
     def ingest(self, output_root: Path) -> IngestResult:
         source = self.original_path
@@ -170,7 +186,7 @@ class PreparedLocalIngest:
             if (current_source_digest, current_source_size) != (source_digest, source_size):
                 raise IngestError("source file changed during ingest; retry after changes settle")
 
-            bundle_digest = _combined_digest(source_digest, transcript.identity_component)
+            bundle_digest = self._bundle_digest(transcript)
             bundle_id = f"{_slug(source.stem)}-{bundle_digest[:12]}"
             bundle_dir = output_root / bundle_id
             if bundle_dir.exists():
@@ -186,6 +202,7 @@ class PreparedLocalIngest:
                     duration_s=source_duration,
                 ),
             )
+            manifest.source, warnings = _source_with_info(manifest.source, self._info_payload)
 
             source_json = temp_root / "source.json"
             _write_json(
@@ -206,6 +223,7 @@ class PreparedLocalIngest:
                 },
             )
             manifest.stages[StageName.ACQUIRE] = _done_stage(temp_root, [source_json])
+            manifest.stages[StageName.ACQUIRE].warnings = list(warnings)
             manifest.stages[StageName.NORMALIZE] = _done_stage(temp_root, [audio_path])
 
             segments_path = temp_root / "transcript" / "segments.json"
@@ -269,11 +287,14 @@ def prepare_local_ingest(
                     size += len(chunk)
         sidecar = transcript_sidecar_path(source, root=source_root)
         sidecar_payload = sidecar.read_bytes() if sidecar is not None else None
+        info = info_sidecar_path(source, root=source_root)
+        info_payload = info.read_bytes() if info is not None else None
         media_digest = digest.hexdigest()
         sidecar_digest = (
             hashlib.sha256(sidecar_payload).hexdigest() if sidecar_payload is not None else None
         )
-        composite = approval_digest(media_digest, sidecar_digest)
+        info_digest = hashlib.sha256(info_payload).hexdigest() if info_payload is not None else None
+        composite = approval_digest(media_digest, sidecar_digest, info_digest)
         if expected_approval_sha256 is not None and composite != expected_approval_sha256:
             raise AutomationError("source file changed since queue approval; rescan before ingest")
         yield PreparedLocalIngest(
@@ -287,6 +308,7 @@ def prepare_local_ingest(
             _sidecar_payload=sidecar_payload,
             _command=command,
             _sidecar_path=sidecar,
+            _info_payload=info_payload,
             _asr_model=asr_model,
             _allow_model_download=allow_model_download,
             _language=language,
@@ -781,6 +803,69 @@ def _wav_duration_seconds(path: Path) -> float | None:
         raise IngestError(f"normalized audio is not readable WAV: {path}") from exc
 
 
+def _info_string(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("metadata text must be a string")
+    return value.strip() or None
+
+
+def _source_with_info(source: Source, captured: bytes | None) -> tuple[Source, tuple[str, ...]]:
+    """Import only allowlisted values; never persist the raw input or diagnostics."""
+
+    if captured is None:
+        return source, ()
+    try:
+        raw: object = json.loads(captured.decode("utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("metadata must be an object")
+        payload = cast(dict[str, Any], raw)
+        title = _info_string(payload, "title")
+        channel = _info_string(payload, "channel") or _info_string(payload, "uploader")
+        upload_date = _info_string(payload, "upload_date")
+        published = None
+        if upload_date is not None:
+            if re.fullmatch(r"[0-9]{8}", upload_date) is None:
+                raise ValueError("metadata date must be YYYYMMDD")
+            published = datetime.strptime(upload_date, "%Y%m%d").replace(tzinfo=UTC)
+        duration = payload.get("duration")
+        if duration is not None:
+            if isinstance(duration, bool) or not isinstance(duration, int | float):
+                raise ValueError("metadata duration must be numeric")
+            duration = float(duration)
+            if not math.isfinite(duration) or duration < 0:
+                raise ValueError("metadata duration must be finite and nonnegative")
+        external = ExternalSource(
+            provider=_info_string(payload, "extractor_key"),
+            id=_info_string(payload, "id"),
+            url=_info_string(payload, "webpage_url"),
+            playlist_id=_info_string(payload, "playlist_id"),
+            playlist_title=(
+                _info_string(payload, "playlist_title") or _info_string(payload, "playlist")
+            ),
+            playlist_index=payload.get("playlist_index"),
+            language_hint=_info_string(payload, "language"),
+        )
+        updated = source.model_copy(
+            update={
+                "title": title or source.title,
+                "channel": source.channel or channel,
+                "published": source.published or published,
+                "duration_s": source.duration_s if source.duration_s is not None else duration,
+                "external": (
+                    external
+                    if any(value is not None for value in external.model_dump().values())
+                    else None
+                ),
+            }
+        )
+        return updated, ()
+    except (ValueError, OverflowError, RecursionError):
+        return source, ("Malformed info.json sidecar; metadata ignored.",)
+
+
 def _summary_lite(transcript: TranscriptResult, source: Source) -> str:
     word_count = sum(len(segment.text.split()) for segment in transcript.segments)
     start = min(segment.start_s for segment in transcript.segments)
@@ -789,8 +874,14 @@ def _summary_lite(transcript: TranscriptResult, source: Source) -> str:
         if all(segment.end_s is not None for segment in transcript.segments)
         else None
     )
+    details = "".join(
+        f"{'URL' if key == 'url' else key.capitalize()}: {' '.join(value.split())}\n"
+        for key, value in source_details(source).items()
+        if value is not None
+    )
     return (
-        f"# {source.title or 'Untitled talk'}\n\n"
+        f"# {' '.join((source.title or 'Untitled talk').split())}\n\n"
+        f"{details}"
         f"Duration: {format_time(source.duration_s, duration=True)}\n"
         f"Transcript method: {transcript.method}\n"
         f"Segments: {len(transcript.segments)}\n"

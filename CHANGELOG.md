@@ -5,6 +5,13 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Added adjacent local `.info.json` metadata intake with an allowlisted optional
+  external identity, channel, publication date, and talk title. Captured metadata
+  bytes are bound to queue approval and bundle identity; malformed metadata is
+  ignored with a recorded acquire-stage warning. No downloader is included.
+- Added `library list --playlist [ID]` grouping/filtering and title/external JSON
+  fields, plus provenance facts in `library show` and the overview card. Existing
+  bundles remain readable without a manifest schema version change.
 - Added timed VTT/SRT sidecar ingestion, including language-tagged filenames and
   rolling auto-caption de-duplication, with captured caption bytes bound to queue
   approval. Added optional local faster-whisper ASR via `lectern[asr]`, model and
