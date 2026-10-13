@@ -13,7 +13,7 @@ from pathlib import Path
 
 from lectern.bundle import FrameRecord, FramesDocument
 
-FRAME_METHOD = "scene+interval+dhash"
+FRAME_METHOD = "scene+interval+gray64x36-mad"
 FRAME_EVIDENCE_LIMIT = "frames are samples; content between frames is not represented"
 DEFAULT_FRAME_INTERVAL = 30.0
 DEFAULT_MAX_FRAMES = 300
@@ -30,15 +30,18 @@ def validate_frame_options(interval: float, maximum: int) -> None:
         raise KeyframeError("max frames must be greater than zero")
 
 
-def _dhash(gray: bytes) -> int:
-    """64 horizontal comparisons over ffmpeg's 9x8 grayscale thumbnail."""
+# Deduplicate by mean absolute luma difference on a 64x36 thumbnail against the
+# last kept frame. Calibrated on one real screen-shared lecture (2026-10-13): a
+# held document with a webcam inset differs by 0.3-1.2 levels between samples,
+# while scrolled or changed text differs by 2.4-10. A 9x8 difference hash merged
+# distinct pages of scrolled text and kept 14 frames where 21 were distinct.
+_THUMB_W, _THUMB_H = 64, 36
+_THUMB_BYTES = _THUMB_W * _THUMB_H
+_MIN_MEAN_ABS_DIFF = 2.0
 
-    value = 0
-    for row in range(8):
-        for column in range(8):
-            offset = row * 9 + column
-            value = (value << 1) | (gray[offset] > gray[offset + 1])
-    return value
+
+def _mean_abs_diff(a: bytes, b: bytes) -> float:
+    return sum(abs(x - y) for x, y in zip(a, b, strict=True)) / _THUMB_BYTES
 
 
 def extract_frames(
@@ -47,8 +50,8 @@ def extract_frames(
     """Read only the private snapshot; None means it contains no video stream.
 
     Merge scene changes and the first frame of each interval bucket. Deduplicate
-    adjacent candidates against the earliest retained frame of the run. A mean
-    luma guard prevents dHash's flat-image collision from discarding slide cuts.
+    candidates against the last retained frame by mean absolute luma difference
+    on a 64x36 thumbnail.
     Candidate files are temporary and are never declared as bundle evidence.
     """
 
@@ -92,7 +95,7 @@ def extract_frames(
         filters = (
             f"[0:v:0]setpts=PTS-STARTPTS,select='{selection}',metadata=mode=print,"
             "scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease,"
-            "showinfo,split=2[jpeg][small];[small]scale=9:8,format=gray[gray]"
+            "showinfo,split=2[jpeg][small];[small]scale=64:36,format=gray[gray]"
         )
         result = subprocess.run(
             [
@@ -142,20 +145,18 @@ def extract_frames(
         scores = re.findall(r"lavfi.scene_score=([\d.eE+-]+)", result.stderr)
         images = sorted(candidates.glob("*.jpg"))
         gray_size = (candidates / "hashes.gray").stat().st_size
-        if len(facts) != len(images) or len(scores) != len(images) or gray_size != 72 * len(images):
+        expected_gray = _THUMB_BYTES * len(images)
+        if len(facts) != len(images) or len(scores) != len(images) or gray_size != expected_gray:
             raise KeyframeError("ffmpeg candidate timestamps and images do not match")
         frames_dir = bundle / "visual/frames"
         frames_dir.mkdir(parents=True)
         frames: list[FrameRecord] = []
-        previous: tuple[int, float] | None = None
+        previous: bytes | None = None
         with (candidates / "hashes.gray").open("rb") as thumbnails:
             for image, (timestamp, width, height), score in zip(images, facts, scores, strict=True):
-                gray = thumbnails.read(72)
-                signature, brightness = _dhash(gray), sum(gray) / 72
-                if previous is not None:
-                    distance = (signature ^ previous[0]).bit_count()
-                    if distance <= 4 and abs(brightness - previous[1]) <= 6:
-                        continue
+                gray = thumbnails.read(_THUMB_BYTES)
+                if previous is not None and _mean_abs_diff(gray, previous) < _MIN_MEAN_ABS_DIFF:
+                    continue
                 index = len(frames)
                 relative = f"visual/frames/{index:04d}.jpg"
                 destination = bundle / relative
@@ -171,7 +172,7 @@ def extract_frames(
                         height=int(height),
                     )
                 )
-                previous = signature, brightness
+                previous = gray
                 if len(frames) >= maximum:
                     break
         document = FramesDocument(frames)

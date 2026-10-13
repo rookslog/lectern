@@ -104,7 +104,7 @@ def test_video_frames_are_deduplicated_declared_and_citeable(
     assert packet["layers"]["visual"] == {
         "present": True,
         "frame_count": 3,
-        "method": "scene+interval+dhash",
+        "method": "scene+interval+gray64x36-mad",
         "evidence_limit": "frames are samples; content between frames is not represented",
     }
     assert [row["file"] for row in packet["frames"]] == [row["file"] for row in frames]
