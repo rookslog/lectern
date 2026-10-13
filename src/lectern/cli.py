@@ -7,7 +7,7 @@ import sqlite3
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from lectern import __version__
 from lectern.automation import (
@@ -574,6 +574,21 @@ def _library(args: Sequence[str]) -> int:
     return 2
 
 
+def _project_metadata_values(values: dict[str, Any]) -> dict[str, Any]:
+    """Redact display metadata without changing stored provenance or identities."""
+
+    return {
+        key: (
+            redact_paths(value)
+            if isinstance(value, str)
+            else _project_metadata_values(cast(dict[str, Any], value))
+            if isinstance(value, dict)
+            else value
+        )
+        for key, value in values.items()
+    }
+
+
 def _library_list(args: Sequence[str], state_path: Path, json_output: bool) -> int:
     grouped = bool(args) and args[0] == "--playlist"
     if args and (not grouped or len(args) > 2 or (len(args) == 2 and args[1].startswith("-"))):
@@ -603,6 +618,11 @@ def _library_list(args: Sequence[str], state_path: Path, json_output: bool) -> i
             ]
         rows.sort(key=_playlist_sort_key)
     if json_output:
+        # Filtering and ordering use the original metadata; projection is display-only.
+        for row in rows:
+            row["title"] = redact_paths(row["title"])
+            if row["external"] is not None:
+                row["external"] = _project_metadata_values(row["external"])
         _print_json({"bundles": rows})
     else:
         previous_group: str | None = None
@@ -652,14 +672,17 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
     title = redact_paths(manifest.source.title or "Untitled talk")
     payload = {
         "bundle": bundle.to_dict(),
-        "manifest": manifest.model_dump(mode="json"),
+        "manifest": {
+            **manifest.model_dump(mode="json"),
+            "source": _project_metadata_values(manifest.source.model_dump(mode="json")),
+        },
         "bundle_id": bundle.bundle_id,
         "title": title,
-        **source_details(manifest.source),
+        **_project_metadata_values(source_details(manifest.source)),
         "external": (
             None
             if manifest.source.external is None
-            else manifest.source.external.model_dump(mode="json")
+            else _project_metadata_values(manifest.source.external.model_dump(mode="json"))
         ),
         "status": bundle.status.value,
         "created_at": bundle.created_at,
@@ -924,6 +947,8 @@ def _migrate_bundle(args: Sequence[str]) -> int:
         print(f"migrate: {exc}", file=sys.stderr)
         return 3
     _print_json(result.to_public_dict())
+    if result.source_version == "1.0.0" and result.outcome == "already_current":
+        print("migrate: already readable; 1.0.0 is a subset of 1.1.0", file=sys.stderr)
     return 0
 
 

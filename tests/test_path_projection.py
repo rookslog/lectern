@@ -228,6 +228,65 @@ def test_library_show_error_emits_no_filesystem_path(
     _assert_no_path(capsys.readouterr().err, folder, "library show error")
 
 
+def test_info_metadata_paths_are_projected_in_library_output(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    folder = _watched_folder(tmp_path)
+    media = folder / "synthetic_talk.wav"
+    private_path = str(folder / "session.wav")
+    media.with_suffix(".info.json").write_text(
+        json.dumps(
+            {
+                "title": f"Talk at {private_path}",
+                "channel": private_path,
+                "extractor_key": private_path,
+                "id": private_path,
+                "webpage_url": private_path,
+                "playlist_id": private_path,
+                "playlist_title": private_path,
+                "language": private_path,
+            }
+        )
+    )
+    state_path = tmp_path / "state.sqlite"
+    with open_state(state_path) as state:
+        result = state.ingest_one_shot(media, tmp_path / "bundles")
+    before = (result.bundle_dir / "manifest.json").read_bytes()
+    bundle_id = result.manifest.bundle_id
+    commands = (
+        ["list"],
+        ["list", "--playlist"],
+        ["show", bundle_id],
+        ["search", "inspectable knowledge"],
+    )
+    for command in commands:
+        for json_output in (False, True):
+            args = ["library", *command, "--state", str(state_path)]
+            if json_output:
+                args.append("--json")
+            assert cli.main(args) == 0
+            output = capsys.readouterr().out
+            _assert_no_path(output, folder, f"library {command[0]}")
+            if json_output:
+                payload = json.loads(output)
+                if command[0] == "list":
+                    source = payload["bundles"][0]
+                elif command[0] == "show":
+                    source = payload["manifest"]["source"]
+                    assert payload["channel"] == payload["url"] == PATH_REDACTED
+                else:
+                    source = payload["results"][0]
+                assert source["title"] == f"Talk at {PATH_REDACTED}"
+                if command[0] != "search":
+                    assert all(
+                        value == PATH_REDACTED
+                        for value in source["external"].values()
+                        if value is not None
+                    )
+    assert (result.bundle_dir / "manifest.json").read_bytes() == before
+    assert result.manifest.source.title == f"Talk at {private_path}"
+
+
 def test_library_show_contains_a_recursively_nested_manifest(
     registered: tuple[Path, Path, Path], capsys: CaptureFixture[str]
 ) -> None:
