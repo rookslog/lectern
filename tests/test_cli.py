@@ -54,6 +54,7 @@ def test_doctor_reports_required_local_tools(
     assert "python: OK" in captured.out
     assert "ffmpeg: OK (/usr/bin/ffmpeg)" in captured.out
     assert "ffprobe: MISSING (needed for --frames)" in captured.out
+    assert "diarize: OPTIONAL (" in captured.out
     assert captured.err == ""
 
 
@@ -211,6 +212,7 @@ def test_ingest_usage_error_mentions_transcriber_command(
 
     captured = capsys.readouterr()
     assert "--transcriber-command COMMAND" in captured.err
+    assert "--diarize" in captured.err and "--speakers N" in captured.err
 
 
 def test_source_queue_library_commands_emit_json(

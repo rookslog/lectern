@@ -63,8 +63,8 @@ def test_json_packet_preserves_existing_anchors_and_reports_layers(
         "segment_count": 3,
     }
     assert packet["layers"]["visual"] == {"present": False, "reason": "not requested"}
-    for layer in ("speakers", "translation"):
-        assert packet["layers"][layer] == {"present": False, "reason": "not processed"}
+    assert packet["layers"]["speakers"] == {"present": False, "reason": "not requested"}
+    assert packet["layers"]["translation"] == {"present": False, "reason": "not processed"}
     for index, segment in enumerate(packet["segments"]):
         assert {key: segment[key] for key in SEGMENTS[index]} == SEGMENTS[index]
         assert (
@@ -87,7 +87,8 @@ def test_json_packet_preserves_existing_anchors_and_reports_layers(
     assert cli.main(args) == 0
     layers = json.loads(capsys.readouterr().out)["layers"]
     assert layers["visual"]["present"] is False
-    assert layers["speakers"]["present"] is True
+    # A done stage alone is not a speaker layer without its declared artifact.
+    assert layers["speakers"] == {"present": False, "reason": "not recorded"}
 
     # A migrated bundle's free-form segment `source` may hold a path; it must not leak.
     read_evidence = state_module.AutomationStateStore.get_registered_evidence

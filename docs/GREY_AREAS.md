@@ -28,6 +28,13 @@ The honest list: things that are legally, ethically, or technically unsettled, m
 
 **Position.** Diarization is an optional extra (`lectern[diarize]`) with its own setup step; the pipeline degrades gracefully without it. No core feature may depend on speaker labels.
 
+Ungated models also exist: the [pyannote segmentation-3.0 ONNX export](https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0)
+([MIT, CNRS](https://huggingface.co/pyannote/segmentation-3.0/blob/main/LICENSE))
+and the [WeSpeaker ResNet34 VoxCeleb embedding model](https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM)
+(CC BY 4.0) are used
+by the optional sherpa-onnx backend. Users fetch them during setup; Lectern does
+not vendor either model.
+
 ## 5. Live recordings of other people
 
 **The grey zone.** Recording a lecture you attend involves consent norms (and sometimes law — one/two-party consent rules, institutional policy) that vary by jurisdiction and venue. The tool can't know whether a given recording was permitted, and speakers hold rights in their own presentations.

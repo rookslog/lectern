@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any, cast
 
 from lectern.bundle import StageName, StageRecord, StageState
-from lectern.evidence import read_frames, read_transcript_metadata
+from lectern.diarization import SPEAKER_EVIDENCE_LIMIT
+from lectern.evidence import read_diarization, read_frames, read_transcript_metadata
 from lectern.keyframes import FRAME_EVIDENCE_LIMIT, FRAME_METHOD
 from lectern.readable import format_time, plain_field
 from lectern.records import AutomationError, LibraryStatus, redact_paths
@@ -44,6 +45,7 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
     manifest = state.get_library_manifest(bundle_id)
     metadata = read_transcript_metadata(Path(bundle.bundle_path), manifest, evidence.source)
     visual = read_frames(Path(bundle.bundle_path), manifest)
+    speakers_document = read_diarization(Path(bundle.bundle_path), manifest)
     source = evidence.source.source
     source_facts = source.model_dump(
         mode="json", include={"title", "channel", "published", "duration_s", "external"}
@@ -67,16 +69,18 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
     }
     for name, stage in (("visual", StageName.VISUAL), ("speakers", StageName.DIARIZE)):
         record = manifest.stages.get(stage)
-        present = _stage_done(record)
+        present = _stage_done(record) if name == "visual" else speakers_document is not None
         layers[name] = {"present": present}
         if not present:
             layers[name]["reason"] = (
                 "not recorded"
                 if record is None
                 else redact_paths(record.warnings[0])
-                if name == "visual" and record.warnings
+                if record.warnings and record.state is not StageState.DONE
                 else "not processed"
                 if record.state is StageState.PENDING
+                else "not recorded"
+                if record.state is StageState.DONE
                 else record.state.value
             )
     if visual is not None:
@@ -86,6 +90,19 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
             "method": FRAME_METHOD,
             "evidence_limit": FRAME_EVIDENCE_LIMIT,
         }
+    if speakers_document is not None:
+        layers["speakers"] = {
+            "present": True,
+            "method": speakers_document.method,
+            "speaker_count": speakers_document.speaker_count,
+            "count_source": speakers_document.count_source,
+            "evidence_limit": SPEAKER_EVIDENCE_LIMIT,
+        }
+    speakers_by_segment = (
+        {}
+        if speakers_document is None
+        else {s.segment_id: s.speaker for s in speakers_document.segment_speakers}
+    )
     # No translation stage or translation artifact is defined by the current schema.
     # ENRICH is not evidence of translation and must not be used as a proxy for it.
     layers["translation"] = {"present": False, "reason": "not processed"}
@@ -96,6 +113,11 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
             {
                 **segment.model_dump(mode="json"),
                 "text": redact_paths(segment.text),
+                **(
+                    {"speaker": speakers_by_segment.get(segment.id)}
+                    if speakers_document is not None
+                    else {}
+                ),
                 "anchor": {
                     **anchor.to_dict(),
                     "bundle_id": redact_paths(bundle_id),
@@ -189,10 +211,16 @@ def packet_markdown(packet: dict[str, Any]) -> str:
                 f"; frames: {layer['frame_count']}; method: {layer['method']}"
                 f"; evidence limit: {layer['evidence_limit']}"
             )
+        elif name == "speakers" and "speaker_count" in layer:
+            description += (
+                f"; count: {layer['speaker_count']} ({layer['count_source']})"
+                f"; method: {layer['method']}; evidence limit: {layer['evidence_limit']}"
+            )
         lines.append(f"- {name}: {description}")
     lines.extend(["", "## Segments", ""])
     for segment in packet["segments"]:
-        lines.append(f"{segment['anchor']['cite']} {segment['text']}")
+        label = f"{segment['speaker']}: " if segment.get("speaker") else ""
+        lines.append(f"{segment['anchor']['cite']} {label}{segment['text']}")
     if packet.get("frames"):
         lines.extend(
             [

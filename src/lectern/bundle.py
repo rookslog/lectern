@@ -522,12 +522,67 @@ class FramesDocument(RootModel[list[FrameRecord]]):
         return self
 
 
+SpeakerLabel = Annotated[str, StringConstraints(strict=True, pattern=r"^S[1-9][0-9]*$")]
+
+
+class DiarizationTurn(ArtifactModel):
+    start_s: Annotated[FiniteFloat, Field(ge=0)]
+    end_s: Annotated[FiniteFloat, Field(ge=0)]
+    speaker: SpeakerLabel
+
+    model_config = {"extra": "forbid", "strict": True}
+
+    @model_validator(mode="after")
+    def validate_span(self) -> DiarizationTurn:
+        if self.end_s <= self.start_s:
+            raise ValueError("diarization turn must end after its start")
+        return self
+
+
+class SegmentSpeaker(ArtifactModel):
+    segment_id: SegmentId
+    speaker: SpeakerLabel | None
+
+    model_config = {"extra": "forbid", "strict": True}
+
+
+class DiarizationDocument(ArtifactModel):
+    """`transcript/diarization.json`, anonymous local speaker evidence."""
+
+    method: str
+    speaker_count: NonNegativeStrictInt
+    count_source: Literal["given", "estimated"]
+    turns: list[DiarizationTurn]
+    segment_speakers: list[SegmentSpeaker]
+
+    model_config = {"extra": "forbid", "strict": True}
+
+    @model_validator(mode="after")
+    def validate_document(self) -> DiarizationDocument:
+        if any(a.start_s > b.start_s for a, b in zip(self.turns, self.turns[1:], strict=False)):
+            raise ValueError("diarization turns must be ordered by start time")
+        labels = list(dict.fromkeys(turn.speaker for turn in self.turns))
+        if labels != [f"S{i + 1}" for i in range(len(labels))]:
+            raise ValueError("speaker labels must follow first appearance")
+        if len(labels) > self.speaker_count or (
+            self.count_source == "estimated" and len(labels) != self.speaker_count
+        ):
+            raise ValueError("speaker count does not match the labelled turns")
+        ids = [assignment.segment_id for assignment in self.segment_speakers]
+        if len(ids) != len(set(ids)):
+            raise ValueError("segment speaker ids must be unique")
+        if any(s.speaker is not None and s.speaker not in labels for s in self.segment_speakers):
+            raise ValueError("segment speaker must name a recorded speaker")
+        return self
+
+
 ARTIFACT_MODELS: dict[str, type[BaseModel]] = {
     "manifest": Manifest,
     "source": SourceDocument,
     "transcript-segments": TranscriptSegmentsDocument,
     "transcript-metadata": TranscriptMetadataDocument,
     "frames": FramesDocument,
+    "diarization": DiarizationDocument,
 }
 
 

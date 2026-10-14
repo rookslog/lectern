@@ -5,6 +5,15 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Added opt-in local speaker diarization via `lectern[diarize]` (sherpa-onnx)
+  for one-shot and queued ingest. Ungated models are user-fetched only with
+  explicit model-download permission and verified before atomic publication.
+  Speaker options bind bundle identity; the additive `1.1.0` artifact
+  `transcript/diarization.json` declares anonymous turns and segment assignments.
+  Packets, transcript views and library inspection show labels and their limits;
+  doctor reports the optional backend and default models without affecting its
+  exit code. Unrequested diarization is explicitly skipped.
+
 - Raised the writer's manifest schema to `1.1.0` for optional transcript
   language/ASR backend metadata, `source.external`, and stage warnings. Readers
   accept both `1.0.0` and `1.1.0` without migration and refuse other versions,

@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from lectern import asr
+from lectern import asr, diarization
 from lectern.bundle import (
     ArtifactRef,
     ExternalSource,
@@ -44,7 +44,7 @@ from lectern.keyframes import (
     validate_frame_options,
 )
 from lectern.readable import format_time, source_details
-from lectern.records import AutomationError, approval_digest
+from lectern.records import AutomationError, approval_digest, redact_paths
 from lectern.sources.local import (
     caption_sidecar_language,
     info_sidecar_path,
@@ -145,6 +145,10 @@ class PreparedLocalIngest:
     _frames: bool
     _frame_interval: float
     _max_frames: int
+    _diarize: bool
+    _speakers: int | None
+    _speaker_threshold: float
+    _diarize_models: Path
 
     def planned_bundle_id(self) -> str | None:
         if self._command is not None or self._sidecar_payload is None:
@@ -170,6 +174,15 @@ class PreparedLocalIngest:
                 "method": FRAME_METHOD,
                 "interval": self._frame_interval,
                 "max_frames": self._max_frames,
+            }
+            components.append(json.dumps(options, sort_keys=True, separators=(",", ":")))
+        if self._diarize:
+            options = {
+                "diarize": True,
+                "method": diarization.DIARIZATION_METHOD,
+                "models": {model.name: model.sha256 for model in diarization.MODEL_FILES},
+                "speakers": self._speakers,
+                "speaker_threshold": self._speaker_threshold,
             }
             components.append(json.dumps(options, sort_keys=True, separators=(",", ":")))
         return _combined_digest(*components)
@@ -202,6 +215,21 @@ class PreparedLocalIngest:
                     allow_model_download=self._allow_model_download,
                 )
             transcript = _with_language(transcript, self._language)
+
+            speakers_document = None
+            if self._diarize:
+                try:
+                    backend = diarization.create_diarizer(
+                        self._diarize_models,
+                        speakers=self._speakers,
+                        threshold=self._speaker_threshold,
+                        allow_model_download=self._allow_model_download,
+                    )
+                    speakers_document = diarization.diarization_document(
+                        backend.diarize(audio_path), transcript.segments, speakers=self._speakers
+                    )
+                except Exception as exc:
+                    raise IngestError(f"local diarization: {redact_paths(str(exc))}") from exc
 
             frames = None
             if self._frames:
@@ -278,6 +306,15 @@ class PreparedLocalIngest:
                 [segments_path, transcript_path, metadata_path],
             )
 
+            if speakers_document is not None:
+                diarization_path = temp_root / "transcript/diarization.json"
+                _write_json(diarization_path, speakers_document.model_dump(mode="json"))
+                manifest.stages[StageName.DIARIZE] = _done_stage(temp_root, [diarization_path])
+            else:
+                manifest.stages[StageName.DIARIZE] = StageRecord(
+                    state=StageState.SKIPPED, warnings=["not requested"]
+                )
+
             if self._frames:
                 if frames is None:
                     manifest.stages[StageName.VISUAL] = StageRecord(
@@ -319,12 +356,17 @@ def prepare_local_ingest(
     frames: bool = False,
     frame_interval: float = DEFAULT_FRAME_INTERVAL,
     max_frames: int = DEFAULT_MAX_FRAMES,
+    diarize: bool = False,
+    speakers: int | None = None,
+    speaker_threshold: float = diarization.DEFAULT_SPEAKER_THRESHOLD,
+    diarize_models: Path = diarization.DEFAULT_DIARIZE_MODELS,
     source_root: Path | None = None,
     expected_approval_sha256: str | None,
 ) -> Generator[PreparedLocalIngest]:
     try:
         validate_frame_options(frame_interval, max_frames)
-    except KeyframeError as exc:
+        diarization.validate_diarization_options(speakers, speaker_threshold)
+    except (KeyframeError, diarization.DiarizationError) as exc:
         raise IngestError(str(exc)) from exc
     source = source_path.expanduser()
     if not source.is_file():
@@ -373,6 +415,10 @@ def prepare_local_ingest(
             _frames=frames,
             _frame_interval=float(frame_interval),
             _max_frames=max_frames,
+            _diarize=diarize,
+            _speakers=speakers,
+            _speaker_threshold=float(speaker_threshold),
+            _diarize_models=diarize_models,
         )
 
 
@@ -384,6 +430,10 @@ def plan_local_bundle_id(
     frames: bool = False,
     frame_interval: float = DEFAULT_FRAME_INTERVAL,
     max_frames: int = DEFAULT_MAX_FRAMES,
+    diarize: bool = False,
+    speakers: int | None = None,
+    speaker_threshold: float = diarization.DEFAULT_SPEAKER_THRESHOLD,
+    diarize_models: Path = diarization.DEFAULT_DIARIZE_MODELS,
 ) -> str:
     """Return the bundle id for a private capture of the source and sidecar."""
 
@@ -394,6 +444,10 @@ def plan_local_bundle_id(
         frames=frames,
         frame_interval=frame_interval,
         max_frames=max_frames,
+        diarize=diarize,
+        speakers=speakers,
+        speaker_threshold=speaker_threshold,
+        diarize_models=diarize_models,
         expected_approval_sha256=None,
     ) as prepared:
         if _explicit_transcriber_command(transcriber_command) is not None:
@@ -430,6 +484,10 @@ def ingest_local(
     frames: bool = False,
     frame_interval: float = DEFAULT_FRAME_INTERVAL,
     max_frames: int = DEFAULT_MAX_FRAMES,
+    diarize: bool = False,
+    speakers: int | None = None,
+    speaker_threshold: float = diarization.DEFAULT_SPEAKER_THRESHOLD,
+    diarize_models: Path = diarization.DEFAULT_DIARIZE_MODELS,
 ) -> IngestResult:
     with prepare_local_ingest(
         source_path,
@@ -440,6 +498,10 @@ def ingest_local(
         frames=frames,
         frame_interval=frame_interval,
         max_frames=max_frames,
+        diarize=diarize,
+        speakers=speakers,
+        speaker_threshold=speaker_threshold,
+        diarize_models=diarize_models,
         expected_approval_sha256=None,
     ) as prepared:
         return prepared.ingest(output_root)

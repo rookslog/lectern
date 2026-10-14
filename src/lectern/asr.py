@@ -58,7 +58,7 @@ class _NumpyModule(Protocol):
     def frombuffer(self, buffer: bytes, dtype: str) -> _NumpyArray: ...
 
 
-def _pcm16_mono_samples(audio: Path) -> _NumpyArray:
+def pcm16_mono_samples(audio: Path) -> _NumpyArray:
     """Read Lectern's canonical WAV (16 kHz, mono, 16-bit) as float32 in [-1, 1)."""
 
     with wave.open(str(audio), "rb") as reader:
@@ -106,7 +106,7 @@ class FasterWhisperBackend:
         # Hand faster-whisper decoded samples, not a path: its own decoder calls
         # PyAV with an argument PyAV 19 removed, and Lectern's normalized audio is
         # already 16 kHz mono 16-bit PCM, which is exactly what the model expects.
-        segments, info = self._model.transcribe(_pcm16_mono_samples(audio), language=language)
+        segments, info = self._model.transcribe(pcm16_mono_samples(audio), language=language)
         return ASRResult(
             segments=tuple(
                 ASRSegment(segment.start, segment.end, segment.text.strip())

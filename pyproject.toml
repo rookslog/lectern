@@ -12,13 +12,15 @@ dependencies = [
 
 [project.optional-dependencies]
 asr = ["faster-whisper>=1.0"]
+diarize = ["sherpa-onnx>=1.13,<2"]
 dev = [
     "pytest>=8",
     "ruff>=0.4",
     "pyright>=1.1.360",
 ]
-# Local timed ASR is optional via `asr`. Other stage dependencies land with their
-# milestones: yt-dlp, mlx-whisper (macOS), scenedetect, and gated diarization weights.
+# Local ASR and diarization are optional via `asr` and `diarize`; diarization
+# uses ungated, user-fetched weights. Other stage dependencies land with their
+# milestones: yt-dlp, mlx-whisper (macOS), and scenedetect.
 
 [project.scripts]
 lectern = "lectern.cli:main"

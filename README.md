@@ -122,6 +122,32 @@ filename's language tag when present. The bundle records language and ASR backen
 details, including language probability. Captions (including third-party and
 auto-generated captions) and ASR output make no transcript faithfulness claim.
 
+### Speakers
+
+`--diarize` adds local, anonymous speaker labels (`S1`, `S2`, …) to panels,
+interviews and conversations. Install the optional `lectern[diarize]` extra;
+for panels, pass `--speakers N` when the speaker count is known:
+
+```bash
+uv sync --extra diarize
+uv run lectern ingest panel.wav --diarize --speakers 3 --allow-model-download
+```
+
+Both one-shot and queued ingest accept these options. Models are loaded locally
+by default from `.lectern/cache/diarize`, following the project-local state-dir
+convention; choose another directory with `--diarize-models DIR`.
+`--allow-model-download` fetches the ungated segmentation and embedding models
+over HTTPS and verifies their SHA-256 digests before publishing them atomically.
+Later runs need no download flag. No media is sent to a service. Without a known
+count, `--speaker-threshold X` controls clustering: larger values yield fewer
+speakers. Its default was calibrated on public meeting recordings with reference
+labels.
+
+The bundle declares `transcript/diarization.json`; packets, `lectern transcript`,
+and `library show` expose the speaker layer. Labels are anonymous clusters, not
+identities. Overlapping speech is attributed to one speaker; similar voices may
+merge and one voice may split. No core feature requires speaker labels.
+
 Before planning or processing, Lectern captures a private temporary media copy
 and the sidecar bytes, if present. Queued ingest checks those captured inputs
 against the existing approval before normalization or transcription; planning,

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lectern.bundle import (
+    DiarizationDocument,
     FramesDocument,
     Manifest,
     SourceDocument,
@@ -104,3 +105,17 @@ def read_frames(bundle: Path, manifest: Manifest) -> FramesDocument | None:
         if hashlib.sha256(image).hexdigest() != frame.sha256:
             raise ValueError("frame image does not match its index digest")
     return frames
+
+
+def read_diarization(bundle: Path, manifest: Manifest) -> DiarizationDocument | None:
+    """Read speaker evidence only when its done stage declares the exact artifact."""
+
+    stage = manifest.stages[StageName.DIARIZE]
+    path = "transcript/diarization.json"
+    if stage.state is not StageState.DONE or not any(
+        output.path == path for output in stage.outputs
+    ):
+        return None
+    payload = _contained_payload(bundle, path)
+    _assert_declared_payload(manifest, path, payload)
+    return DiarizationDocument.model_validate_json(payload, strict=True)

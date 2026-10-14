@@ -88,9 +88,9 @@ def test_every_written_json_artifact_has_a_schema(tmp_path: Path) -> None:
         "a JSON artifact is written that no schema describes, or vice versa; "
         f"written={sorted(written)} described={sorted(ARTIFACT_FILES)}"
     )
-    # Visual JSON is opt-in and exercised by test_keyframes; the default bundle
+    # Visual/speaker JSON is opt-in and exercised by their acceptance tests; the default bundle
     # must still contain exactly the unconditional artifacts above.
-    assert set(ARTIFACT_FILES.values()) | {"frames"} == set(ARTIFACT_MODELS)
+    assert set(ARTIFACT_FILES.values()) | {"frames", "diarization"} == set(ARTIFACT_MODELS)
 
 
 def test_manifest_round_trips(tmp_path: Path) -> None:
