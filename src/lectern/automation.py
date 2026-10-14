@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from lectern.bundle import Manifest
-from lectern.diarization import DEFAULT_DIARIZE_MODELS, DEFAULT_SPEAKER_THRESHOLD
+from lectern.diarization import DEFAULT_DIARIZE_MODELS
 from lectern.ingest import (
     BundleExistsError,
     IngestError,
@@ -315,7 +315,6 @@ class AutomationState(AutomationStateStore):
         max_frames: int = DEFAULT_MAX_FRAMES,
         diarize: bool = False,
         speakers: int | None = None,
-        speaker_threshold: float = DEFAULT_SPEAKER_THRESHOLD,
         diarize_models: Path = DEFAULT_DIARIZE_MODELS,
     ) -> IngestResult:
         queue_item = self.get_queue_item(queue_item_id)
@@ -343,7 +342,6 @@ class AutomationState(AutomationStateStore):
                         max_frames=max_frames,
                         diarize=diarize,
                         speakers=speakers,
-                        speaker_threshold=speaker_threshold,
                         diarize_models=diarize_models,
                         source_root=root,
                         expected_approval_sha256=queue_item.content_sha256,
@@ -476,7 +474,6 @@ class AutomationState(AutomationStateStore):
         max_frames: int = DEFAULT_MAX_FRAMES,
         diarize: bool = False,
         speakers: int | None = None,
-        speaker_threshold: float = DEFAULT_SPEAKER_THRESHOLD,
         diarize_models: Path = DEFAULT_DIARIZE_MODELS,
     ) -> IngestResult:
         with prepare_local_ingest(
@@ -490,7 +487,6 @@ class AutomationState(AutomationStateStore):
             max_frames=max_frames,
             diarize=diarize,
             speakers=speakers,
-            speaker_threshold=speaker_threshold,
             diarize_models=diarize_models,
             expected_approval_sha256=None,
         ) as prepared:

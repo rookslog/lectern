@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import shutil
 import wave
@@ -65,9 +66,9 @@ def test_diarized_ingest_maps_overlap_and_keeps_citations(
             return (SpeakerTurn(0.0, 0.8, 7), SpeakerTurn(0.8, 2.0, 3))
 
     def fake_factory(
-        models_dir: Path, *, speakers: int | None, threshold: float, allow_model_download: bool
+        models_dir: Path, *, speakers: int | None, allow_model_download: bool
     ) -> FakeDiarizer:
-        assert speakers == 2 and threshold == 1.0 and not allow_model_download
+        assert speakers == 2 and not allow_model_download
         return FakeDiarizer()
 
     monkeypatch.setattr("lectern.diarization.create_diarizer", fake_factory)
@@ -128,8 +129,6 @@ def test_diarized_ingest_maps_overlap_and_keeps_citations(
                 "--diarize",
                 "--speakers",
                 "2",
-                "--speaker-threshold",
-                "1.0",
                 "--diarize-models",
                 str(tmp_path / "models"),
                 "--output",
@@ -170,7 +169,42 @@ def test_missing_local_models_fail_cleanly_without_paths(
         == 1
     )
     error = capsys.readouterr().err
-    assert "missing diarization model: segmentation.onnx" in error
+    assert "missing diarization model: silero_vad.onnx" in error
     assert "--allow-model-download" in error and "--diarize-models" in error
     assert str(tmp_path) not in error and "Traceback" not in error
     assert list((tmp_path / "bundles").iterdir()) == []
+
+
+@pytest.mark.parametrize("num_speakers", [None, 2])
+def test_vendored_pipeline_separates_alternating_synthetic_speakers(
+    num_speakers: int | None,
+) -> None:
+    pytest.importorskip("sklearn")
+    np = pytest.importorskip("numpy")
+    pipeline = importlib.import_module("lectern._vendor.diarize")
+    types = importlib.import_module("lectern._vendor.diarize.utils")
+    # Two Gaussian blobs in 256 dimensions, six windows per alternating turn.
+    # Sustained turns also exercise upstream temporal smoothing within one VAD segment.
+    rng = np.random.default_rng(42)
+    means = np.zeros((2, 256), dtype=np.float32)
+    means[0, 0] = 8.0
+    means[1, 1] = 8.0
+    labels = (np.arange(60) // 6) % 2
+    embeddings = means[labels] + rng.normal(0.0, 0.1, (60, 256))
+    subsegments = [
+        types.SubSegment(start=i * 0.6, end=i * 0.6 + 1.2, parent_idx=0) for i in range(60)
+    ]
+    duration = subsegments[-1].end
+    turns = pipeline.diarize_embeddings(
+        [types.SpeechSegment(start=0.0, end=duration)],
+        embeddings,
+        subsegments,
+        duration,
+        num_speakers,
+    )
+    assert len({turn.speaker for turn in turns}) == 2
+    assert len(turns) == 10
+    assert [turn.speaker for turn in turns] == [turns[i % 2].speaker for i in range(10)]
+    boundaries = [0.0, *(i * 3.6 + 0.3 for i in range(1, 10)), duration]
+    np.testing.assert_allclose([turn.start for turn in turns], boundaries[:-1])
+    np.testing.assert_allclose([turn.end for turn in turns], boundaries[1:])

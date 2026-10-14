@@ -12,7 +12,13 @@ dependencies = [
 
 [project.optional-dependencies]
 asr = ["faster-whisper>=1.0"]
-diarize = ["sherpa-onnx>=1.13,<2"]
+diarize = [
+    "sherpa-onnx>=1.13,<2",
+    "onnxruntime>=1.18",
+    "kaldi-native-fbank>=1.20",
+    "scikit-learn>=1.4",
+    "numpy>=1.26",
+]
 dev = [
     "pytest>=8",
     "ruff>=0.4",
@@ -35,6 +41,7 @@ packages = ["src/lectern"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+extend-exclude = ["src/lectern/_vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -43,6 +50,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 include = ["src", "tests", "tools"]
 extraPaths = ["src", "tools"]
 typeCheckingMode = "strict"
+exclude = ["src/lectern/_vendor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

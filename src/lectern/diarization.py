@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-import math
 import os
 import tempfile
 import urllib.request
@@ -18,8 +17,10 @@ from lectern.bundle import DiarizationDocument, DiarizationTurn, SegmentSpeaker
 from lectern.records import redact_paths
 
 DEFAULT_DIARIZE_MODELS = Path(".lectern") / "cache" / "diarize"
-DEFAULT_SPEAKER_THRESHOLD = 1.0
-DIARIZATION_METHOD = "sherpa-onnx pyannote-seg-3.0 + wespeaker-resnet34"
+DIARIZATION_METHOD = (
+    "silero-vad-v6 + wespeaker-resnet34 (kaldi fbank, CMN) + spectral clustering (diarize 0.1.2)"
+)
+DIARIZATION_IMPORTS = ("sherpa_onnx", "onnxruntime", "kaldi_native_fbank", "sklearn", "numpy")
 SPEAKER_EVIDENCE_LIMIT = (
     "speaker labels are anonymous clusters (S1, S2, ...), not identities; "
     "overlapping speech is attributed to one speaker; "
@@ -41,26 +42,24 @@ class ModelFile:
 
 MODEL_FILES = (
     ModelFile(
-        "segmentation.onnx",
-        "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx",
-        "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079",
-        5_992_913,
+        "silero_vad.onnx",
+        "https://github.com/snakers4/silero-vad/raw/v6.2.3/src/silero_vad/data/silero_vad.onnx",
+        "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+        2_327_524,
     ),
     ModelFile(
         "embedding.onnx",
-        "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
-        "speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx",
-        "e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012",
-        26_530_550,
+        "https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM/resolve/main/"
+        "voxceleb_resnet34_LM.onnx",
+        "7bb2f06e9df17cdf1ef14ee8a15ab08ed28e8d0ef5054ee135741560df2ec068",
+        26_530_309,
     ),
 )
 
 
-def validate_diarization_options(speakers: int | None, threshold: float) -> None:
+def validate_diarization_options(speakers: int | None) -> None:
     if speakers is not None and (isinstance(speakers, bool) or speakers < 1):
         raise DiarizationError("--speakers must be a positive integer")
-    if not math.isfinite(threshold) or threshold <= 0:
-        raise DiarizationError("--speaker-threshold must be finite and positive")
 
 
 def _verify_model(path: Path, model: ModelFile) -> None:
@@ -155,69 +154,164 @@ class Diarizer(Protocol):
     def diarize(self, audio: Path) -> tuple[SpeakerTurn, ...]: ...
 
 
-class _SherpaTurn(Protocol):
+class _PipelineTurn(Protocol):
     start: float
     end: float
-    speaker: int
+    speaker: str
+
+
+def _load_dependency(name: str) -> Any:
+    try:
+        return importlib.import_module(name)
+    except ImportError as exc:
+        raise DiarizationError(
+            f"local diarization needs {name}; install with pip install 'lectern[diarize]' "
+            "or uv sync --extra diarize"
+        ) from exc
 
 
 def _load_sherpa() -> Any:
     """Lazy import boundary, also guarded against real model loading in unit tests."""
 
-    try:
-        return importlib.import_module("sherpa_onnx")
-    except ImportError as exc:
-        raise DiarizationError(
-            "local diarization needs sherpa-onnx; install with pip install 'lectern[diarize]' "
-            "or uv sync --extra diarize"
-        ) from exc
+    return _load_dependency("sherpa_onnx")
 
 
-class SherpaOnnxDiarizer:
-    def __init__(self, models_dir: Path, *, speakers: int | None, threshold: float) -> None:
-        sherpa = _load_sherpa()
-        config = sherpa.OfflineSpeakerDiarizationConfig(
-            segmentation=sherpa.OfflineSpeakerSegmentationModelConfig(
-                pyannote=sherpa.OfflineSpeakerSegmentationPyannoteModelConfig(
-                    model=str(models_dir / "segmentation.onnx")
-                ),
-                num_threads=2,
-            ),
-            embedding=sherpa.SpeakerEmbeddingExtractorConfig(
-                model=str(models_dir / "embedding.onnx"),
-                num_threads=2,
-            ),
-            clustering=sherpa.FastClusteringConfig(
-                num_clusters=speakers if speakers is not None else -1,
-                threshold=threshold,
-            ),
-            min_duration_on=0.3,
-            min_duration_off=0.5,
+class SileroSpectralDiarizer:
+    def __init__(self, models_dir: Path, *, speakers: int | None) -> None:
+        # Keep this first: the unit-suite guard prevents either real model loading.
+        self._sherpa: Any = _load_sherpa()
+        ort = _load_dependency("onnxruntime")
+        self._fbank: Any = _load_dependency("kaldi_native_fbank")
+        self._numpy: Any = _load_dependency("numpy")
+        self._pipeline: Any = _load_dependency("lectern._vendor.diarize")
+        self._types: Any = _load_dependency("lectern._vendor.diarize.utils")
+        self._windows: Any = _load_dependency("lectern._vendor.diarize.embeddings")
+        self._vad_defaults: Any = _load_dependency("lectern._vendor.diarize.vad")
+        self._speakers = speakers
+
+        config = self._sherpa.VadModelConfig()
+        config.silero_vad.model = str(models_dir / "silero_vad.onnx")
+        config.silero_vad.threshold = self._vad_defaults.VAD_THRESHOLD
+        config.silero_vad.min_speech_duration = self._vad_defaults.MIN_SPEECH_DURATION_MS / 1000
+        config.silero_vad.min_silence_duration = self._vad_defaults.MIN_SILENCE_DURATION_MS / 1000
+        config.silero_vad.window_size = 512
+        config.sample_rate = 16_000
+        config.num_threads = 2
+        self._vad_config: Any = config
+
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 2
+        options.inter_op_num_threads = 1
+        self._session: Any = ort.InferenceSession(
+            str(models_dir / "embedding.onnx"),
+            sess_options=options,
+            providers=["CPUExecutionProvider"],
         )
-        if not config.validate():
-            raise DiarizationError("invalid local diarization model configuration")
-        self._model: Any = sherpa.OfflineSpeakerDiarization(config)
+
+        features = self._fbank.FbankOptions()
+        features.frame_opts.dither = 0.0
+        features.frame_opts.samp_freq = 16_000
+        features.frame_opts.frame_length_ms = 25
+        features.frame_opts.frame_shift_ms = 10
+        features.frame_opts.window_type = "hamming"
+        features.mel_opts.num_bins = 80
+        features.use_energy = False
+        self._feature_options: Any = features
+
+    def _speech_segments(self, samples: Any, duration: float) -> list[Any]:
+        detector = self._sherpa.VoiceActivityDetector(
+            self._vad_config, buffer_size_in_seconds=duration + 1.0
+        )
+        segments: list[Any] = []
+        pad = self._vad_defaults.SPEECH_PAD_MS / 1000
+
+        def drain() -> None:
+            while not detector.empty():
+                segment = detector.front
+                start = segment.start / 16_000
+                end = start + len(segment.samples) / 16_000
+                segments.append(
+                    self._types.SpeechSegment(
+                        start=min(duration, max(0.0, start - pad)),
+                        end=max(0.0, min(duration, end + pad)),
+                    )
+                )
+                detector.pop()
+
+        for offset in range(0, len(samples), 512):
+            detector.accept_waveform(samples[offset : offset + 512])
+            drain()
+        detector.flush()
+        drain()
+        return segments
+
+    def _extract_embeddings(
+        self, samples: Any, speech_segments: list[Any]
+    ) -> tuple[Any, list[Any]]:
+        embeddings: list[Any] = []
+        subsegments: list[Any] = []
+        for parent_idx, segment in enumerate(speech_segments):
+            if segment.duration < self._windows.MIN_SEGMENT_DURATION:
+                continue
+            if segment.duration <= self._windows.EMBEDDING_WINDOW * 1.5:
+                windows = [(segment.start, segment.end)]
+            else:
+                windows: list[tuple[float, float]] = []
+                start = segment.start
+                while start + self._windows.MIN_SEGMENT_DURATION < segment.end:
+                    windows.append(
+                        (start, min(start + self._windows.EMBEDDING_WINDOW, segment.end))
+                    )
+                    start += self._windows.EMBEDDING_STEP
+
+            for start, end in windows:
+                window = samples[int(start * 16_000) : int(end * 16_000)]
+                fbank = self._fbank.OnlineFbank(self._feature_options)
+                fbank.accept_waveform(16_000, (window * 32768).tolist())
+                fbank.input_finished()
+                if fbank.num_frames_ready == 0:
+                    continue
+                feats = self._numpy.array(
+                    [fbank.get_frame(i) for i in range(fbank.num_frames_ready)],
+                    dtype=self._numpy.float32,
+                )
+                feats -= feats.mean(axis=0)
+                embedding = self._session.run(["embs"], {"feats": feats[None]})[0][0]
+                embeddings.append(embedding)
+                subsegments.append(
+                    self._types.SubSegment(start=start, end=end, parent_idx=parent_idx)
+                )
+
+        if not embeddings:
+            return self._numpy.empty((0, 256), dtype=self._numpy.float32), []
+        return self._numpy.stack(embeddings), subsegments
 
     def diarize(self, audio: Path) -> tuple[SpeakerTurn, ...]:
-        if self._model.sample_rate != 16_000:
-            raise DiarizationError("diarization expects a 16 kHz model")
+        samples = cast(Any, pcm16_mono_samples(audio))
+        duration = len(samples) / 16_000
+        speech_segments = self._speech_segments(samples, duration)
+        embeddings, subsegments = self._extract_embeddings(samples, speech_segments)
         turns = cast(
-            Sequence[_SherpaTurn],
-            self._model.process(pcm16_mono_samples(audio)).sort_by_start_time(),
+            Sequence[_PipelineTurn],
+            self._pipeline.diarize_embeddings(
+                speech_segments, embeddings, subsegments, duration, num_speakers=self._speakers
+            ),
         )
-        return tuple(SpeakerTurn(turn.start, turn.end, turn.speaker) for turn in turns)
+        return tuple(
+            SpeakerTurn(turn.start, turn.end, int(turn.speaker.removeprefix("SPEAKER_")))
+            for turn in turns
+        )
 
 
 def create_diarizer(
     models_dir: Path = DEFAULT_DIARIZE_MODELS,
     *,
     speakers: int | None = None,
-    threshold: float = DEFAULT_SPEAKER_THRESHOLD,
     allow_model_download: bool = False,
 ) -> Diarizer:
-    validate_diarization_options(speakers, threshold)
+    validate_diarization_options(speakers)
     directory = ensure_models(models_dir, allow_model_download=allow_model_download)
-    return SherpaOnnxDiarizer(directory, speakers=speakers, threshold=threshold)
+    return SileroSpectralDiarizer(directory, speakers=speakers)
 
 
 class _Segment(Protocol):

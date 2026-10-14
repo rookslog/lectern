@@ -147,7 +147,6 @@ class PreparedLocalIngest:
     _max_frames: int
     _diarize: bool
     _speakers: int | None
-    _speaker_threshold: float
     _diarize_models: Path
 
     def planned_bundle_id(self) -> str | None:
@@ -182,7 +181,6 @@ class PreparedLocalIngest:
                 "method": diarization.DIARIZATION_METHOD,
                 "models": {model.name: model.sha256 for model in diarization.MODEL_FILES},
                 "speakers": self._speakers,
-                "speaker_threshold": self._speaker_threshold,
             }
             components.append(json.dumps(options, sort_keys=True, separators=(",", ":")))
         return _combined_digest(*components)
@@ -222,7 +220,6 @@ class PreparedLocalIngest:
                     backend = diarization.create_diarizer(
                         self._diarize_models,
                         speakers=self._speakers,
-                        threshold=self._speaker_threshold,
                         allow_model_download=self._allow_model_download,
                     )
                     speakers_document = diarization.diarization_document(
@@ -358,14 +355,13 @@ def prepare_local_ingest(
     max_frames: int = DEFAULT_MAX_FRAMES,
     diarize: bool = False,
     speakers: int | None = None,
-    speaker_threshold: float = diarization.DEFAULT_SPEAKER_THRESHOLD,
     diarize_models: Path = diarization.DEFAULT_DIARIZE_MODELS,
     source_root: Path | None = None,
     expected_approval_sha256: str | None,
 ) -> Generator[PreparedLocalIngest]:
     try:
         validate_frame_options(frame_interval, max_frames)
-        diarization.validate_diarization_options(speakers, speaker_threshold)
+        diarization.validate_diarization_options(speakers)
     except (KeyframeError, diarization.DiarizationError) as exc:
         raise IngestError(str(exc)) from exc
     source = source_path.expanduser()
@@ -417,7 +413,6 @@ def prepare_local_ingest(
             _max_frames=max_frames,
             _diarize=diarize,
             _speakers=speakers,
-            _speaker_threshold=float(speaker_threshold),
             _diarize_models=diarize_models,
         )
 
@@ -432,7 +427,6 @@ def plan_local_bundle_id(
     max_frames: int = DEFAULT_MAX_FRAMES,
     diarize: bool = False,
     speakers: int | None = None,
-    speaker_threshold: float = diarization.DEFAULT_SPEAKER_THRESHOLD,
     diarize_models: Path = diarization.DEFAULT_DIARIZE_MODELS,
 ) -> str:
     """Return the bundle id for a private capture of the source and sidecar."""
@@ -446,7 +440,6 @@ def plan_local_bundle_id(
         max_frames=max_frames,
         diarize=diarize,
         speakers=speakers,
-        speaker_threshold=speaker_threshold,
         diarize_models=diarize_models,
         expected_approval_sha256=None,
     ) as prepared:
@@ -486,7 +479,6 @@ def ingest_local(
     max_frames: int = DEFAULT_MAX_FRAMES,
     diarize: bool = False,
     speakers: int | None = None,
-    speaker_threshold: float = diarization.DEFAULT_SPEAKER_THRESHOLD,
     diarize_models: Path = diarization.DEFAULT_DIARIZE_MODELS,
 ) -> IngestResult:
     with prepare_local_ingest(
@@ -500,7 +492,6 @@ def ingest_local(
         max_frames=max_frames,
         diarize=diarize,
         speakers=speakers,
-        speaker_threshold=speaker_threshold,
         diarize_models=diarize_models,
         expected_approval_sha256=None,
     ) as prepared:

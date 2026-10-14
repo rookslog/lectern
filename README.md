@@ -125,23 +125,25 @@ auto-generated captions) and ASR output make no transcript faithfulness claim.
 ### Speakers
 
 `--diarize` adds local, anonymous speaker labels (`S1`, `S2`, …) to panels,
-interviews and conversations. Install the optional `lectern[diarize]` extra;
-for panels, pass `--speakers N` when the speaker count is known:
+interviews and conversations. Install the optional `lectern[diarize]` extra.
+Automatic speaker counting is the default and is usually better; give
+`--speakers N` only if you are sure of the count:
 
 ```bash
 uv sync --extra diarize
-uv run lectern ingest panel.wav --diarize --speakers 3 --allow-model-download
+uv run lectern ingest panel.wav --diarize --allow-model-download
 ```
 
 Both one-shot and queued ingest accept these options. Models are loaded locally
 by default from `.lectern/cache/diarize`, following the project-local state-dir
 convention; choose another directory with `--diarize-models DIR`.
-`--allow-model-download` fetches the ungated segmentation and embedding models
-over HTTPS and verifies their SHA-256 digests before publishing them atomically.
-Later runs need no download flag. No media is sent to a service. Without a known
-count, `--speaker-threshold X` controls clustering: larger values yield fewer
-speakers. Its default was calibrated on public meeting recordings with reference
-labels.
+`--allow-model-download` fetches two ungated models over HTTPS: Silero VAD v6
+(`silero_vad.onnx`) and WeSpeaker ResNet34-LM (`embedding.onnx`). Each fetch
+verifies the pinned SHA-256 digest and size before publishing the file atomically.
+Later runs need no download flag. No media is sent to a service. Local Kaldi
+filterbank features with mean normalization feed the embeddings; the vendored
+`diarize` 0.1.2 pipeline estimates the count and uses spectral clustering with
+temporal smoothing. To override automatic counting, add e.g. `--speakers 3`.
 
 The bundle declares `transcript/diarization.json`; packets, `lectern transcript`,
 and `library show` expose the speaker layer. Labels are anonymous clusters, not

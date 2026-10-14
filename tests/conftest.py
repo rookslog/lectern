@@ -86,8 +86,11 @@ def deny_real_asr_models(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
     monkeypatch.setattr("lectern.asr.create_asr_backend", unavailable)
 
     def unavailable_diarizer() -> None:
-        raise ImportError("real sherpa models are disabled in unit tests; inject a fake diarizer")
+        raise ImportError(
+            "real diarization models are disabled in unit tests; inject a fake diarizer"
+        )
 
     # Guard below file-resolution so missing-model acceptance checks remain real,
-    # but neither cached weights nor a direct constructor can load sherpa models.
+    # but neither cached weights nor a direct constructor can load VAD/embedding models.
+    # The backend must call this boundary before constructing either model.
     monkeypatch.setattr("lectern.diarization._load_sherpa", unavailable_diarizer)

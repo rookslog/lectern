@@ -1,3 +1,5 @@
+# Modified for Lectern, 2026-10-13: remove soundfile/torchaudio duration loading; retain data models.
+# Original: diarize 0.1.2 (Apache-2.0).
 """Core data structures and utility helpers.
 
 All public data models use Pydantic v2 for validation, serialization,
@@ -10,7 +12,6 @@ import logging
 from pathlib import Path
 from typing import Iterator
 
-import soundfile as sf
 from pydantic import BaseModel, Field, computed_field, model_validator
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,6 @@ __all__ = [
     "SubSegment",
     "SpeakerEstimationDetails",
     "DiarizeResult",
-    "get_audio_duration",
     "format_timestamp",
 ]
 
@@ -220,32 +220,6 @@ class DiarizeResult(BaseModel):
 
 
 # ── Utility functions ─────────────────────────────────────────────────────────
-
-
-def get_audio_duration(audio_path: str | Path) -> float:
-    """Return audio duration in seconds.
-
-    Tries ``soundfile`` first, falls back to ``torchaudio``.
-
-    Args:
-        audio_path: Path to an audio file.
-
-    Returns:
-        Duration in seconds, or ``0.0`` if the file cannot be read.
-    """
-    try:
-        info = sf.info(str(audio_path))
-        return info.duration
-    except Exception as exc:
-        logger.debug("soundfile failed for %s: %s", audio_path, exc)
-        try:
-            import torchaudio
-
-            info = torchaudio.info(str(audio_path))
-            return info.num_frames / info.sample_rate
-        except Exception as exc2:
-            logger.warning("Could not determine duration for %s: %s", audio_path, exc2)
-            return 0.0
 
 
 def format_timestamp(seconds: float) -> str:

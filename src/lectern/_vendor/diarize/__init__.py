@@ -1,37 +1,23 @@
-"""Speaker diarization for Python — who spoke when.
-
-CPU-only, no GPU required, no API keys, Apache 2.0 licensed.
-
-Example::
-
-    from diarize import diarize
-
-    result = diarize("meeting.wav")
-    print(result.num_speakers)  # 3
-    print(result.segments)      # [Segment(...), ...]
-    result.to_rttm("output.rttm")
-"""
+# Modified for Lectern, 2026-10-13: expose the post-embedding pipeline; remove audio/model loading.
+# Original: diarize 0.1.2 (Apache-2.0).
+"""Post-embedding speaker diarization pipeline from diarize 0.1.2."""
 
 from __future__ import annotations
 
 import logging
 from collections import Counter
-from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
 
 from .clustering import cluster_speakers, estimate_speakers  # noqa: F401
-from .embeddings import extract_embeddings
 from .utils import (
     DiarizeResult,
     Segment,
     SpeakerEstimationDetails,  # noqa: F401
     SpeechSegment,
     SubSegment,
-    get_audio_duration,
 )
-from .vad import run_vad
 
 
 class _RawSegment(NamedTuple):
@@ -44,7 +30,7 @@ class _RawSegment(NamedTuple):
 
 __version__ = "0.1.2"
 __all__ = [
-    "diarize",
+    "diarize_embeddings",
     "DiarizeResult",
     "Segment",
     "SpeakerEstimationDetails",
@@ -364,74 +350,29 @@ def _build_diarization_segments(
     return [Segment(start=float(m[0]), end=float(m[1]), speaker=str(m[2])) for m in merged]
 
 
-def diarize(
-    audio_path: str | Path,
-    *,
-    min_speakers: int = 1,
-    max_speakers: int = 20,
+def diarize_embeddings(
+    speech_segments: list[SpeechSegment],
+    embeddings: np.ndarray,
+    subsegments: list[SubSegment],
+    audio_duration: float,
     num_speakers: int | None = None,
-) -> DiarizeResult:
-    """Run the full speaker diarization pipeline on an audio file.
+) -> list[Segment]:
+    """Cluster and assemble turns from Lectern's local VAD and embeddings.
 
-    Pipeline stages:
-
-    1. **Silero VAD** — detect speech segments
-    2. **WeSpeaker ResNet34-LM** — extract 256-dim speaker embeddings
-    3. **GMM BIC** — estimate number of speakers (unless *num_speakers*
-       is provided)
-    4. **Spectral Clustering** — assign speaker labels
-
-    Args:
-        audio_path: Path to an audio file (wav, mp3, flac, etc.).
-        min_speakers: Minimum number of speakers for auto-detection.
-        max_speakers: Maximum number of speakers for auto-detection.
-        num_speakers: If set, skip auto-detection and use this exact
-            number of speakers.
-
-    Returns:
-        :class:`DiarizeResult` containing segments, speaker info, and
-        export methods.
-
-    Example::
-
-        from diarize import diarize
-
-        result = diarize("meeting.wav")
-        print(f"Found {result.num_speakers} speakers")
-        for seg in result.segments:
-            print(f"  [{seg.start:.1f} - {seg.end:.1f}] {seg.speaker}")
-        result.to_rttm("meeting.rttm")
+    Speaker counting, clustering, temporal smoothing, and segment building
+    retain upstream's algorithms and defaults (1 through 20 speakers).
     """
-    # ── Input validation ─────────────────────────────────────────────────
-    if min_speakers < 1:
-        raise ValueError(f"min_speakers must be >= 1, got {min_speakers}")
-    if max_speakers < min_speakers:
-        raise ValueError(f"max_speakers ({max_speakers}) must be >= min_speakers ({min_speakers})")
     if num_speakers is not None and num_speakers < 1:
         raise ValueError(f"num_speakers must be >= 1, got {num_speakers}")
 
-    audio_path_str = str(audio_path)
-    duration = get_audio_duration(audio_path_str)
-
-    logger.info("Diarizing: %s (%.1f seconds)", Path(audio_path_str).name, duration)
-
-    # 1. Voice Activity Detection
-    speech_segments: list[SpeechSegment] = run_vad(audio_path_str)
-    if not speech_segments:
-        logger.warning("No speech detected in %s", audio_path_str)
-        return DiarizeResult(audio_path=audio_path_str, audio_duration=duration)
-
-    # 2. Speaker embeddings
-    embeddings, subsegments = extract_embeddings(audio_path_str, speech_segments)
-    if len(embeddings) == 0:
-        logger.warning("Could not extract embeddings from %s", audio_path_str)
-        return DiarizeResult(audio_path=audio_path_str, audio_duration=duration)
+    if not speech_segments or len(embeddings) == 0:
+        return []
 
     # 3. Clustering
     labels, estimation_details = cluster_speakers(
         embeddings,
-        min_speakers=min_speakers,
-        max_speakers=max_speakers,
+        min_speakers=1,
+        max_speakers=20,
         num_speakers=num_speakers,
     )
 
@@ -445,8 +386,7 @@ def diarize(
 
     result = DiarizeResult(
         segments=segments,
-        audio_path=audio_path_str,
-        audio_duration=duration,
+        audio_duration=audio_duration,
         estimation_details=estimation_details,
     )
 
@@ -456,4 +396,4 @@ def diarize(
         len(result.segments),
     )
 
-    return result
+    return result.segments

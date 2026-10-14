@@ -28,7 +28,7 @@ from lectern.automation import (
 from lectern.bundle import StageName, StageState, export_artifact_schemas, export_json_schema
 from lectern.diarization import (
     DEFAULT_DIARIZE_MODELS,
-    DEFAULT_SPEAKER_THRESHOLD,
+    DIARIZATION_IMPORTS,
     MODEL_FILES,
     DiarizationError,
     validate_diarization_options,
@@ -119,21 +119,22 @@ def _doctor() -> int:
         else f"not configured; set {DEFAULT_YOUTUBE_API_KEY_ENV} for YouTube discovery"
     )
     print(f"youtube: OPTIONAL ({youtube_status})")
+    unavailable: list[str] = []
+    for module in DIARIZATION_IMPORTS:
+        try:
+            importlib.import_module(module)
+        except Exception:
+            unavailable.append(module)
+    backend_status = (
+        "diarize extra importable"
+        if not unavailable
+        else "unavailable: " + ", ".join(unavailable) + "; install lectern[diarize]"
+    )
     try:
-        importlib.import_module("sherpa_onnx")
-        backend_status = "sherpa-onnx importable"
-    except Exception:
-        backend_status = "sherpa-onnx unavailable; install lectern[diarize]"
-    try:
-        missing = [
+        model_status = "default models: " + ", ".join(
             model.name
+            + (": present" if (DEFAULT_DIARIZE_MODELS / model.name).is_file() else ": missing")
             for model in MODEL_FILES
-            if not (DEFAULT_DIARIZE_MODELS / model.name).is_file()
-        ]
-        model_status = (
-            "both default models present"
-            if not missing
-            else "default models missing: " + ", ".join(missing)
         )
     except OSError:
         model_status = "default models inaccessible"
@@ -176,7 +177,7 @@ def _ingest(args: Sequence[str]) -> int:
             "[--transcriber-command COMMAND] [--asr-model NAME] "
             "[--allow-model-download] [--language CODE] [--frames] "
             "[--frame-interval SECONDS] [--max-frames N] [--diarize] "
-            "[--speakers N] [--speaker-threshold X] [--diarize-models DIR] [--json]",
+            "[--speakers N] [--diarize-models DIR] [--json]",
             file=sys.stderr,
         )
         return 2
@@ -194,7 +195,6 @@ def _ingest(args: Sequence[str]) -> int:
     max_frames = DEFAULT_MAX_FRAMES
     diarize = False
     speakers: int | None = None
-    speaker_threshold = DEFAULT_SPEAKER_THRESHOLD
     diarize_models = DEFAULT_DIARIZE_MODELS
     rest = list(args[1:])
     index = 0
@@ -218,13 +218,10 @@ def _ingest(args: Sequence[str]) -> int:
         elif token == "--diarize-models" and index + 1 < len(rest):
             diarize_models = Path(rest[index + 1])
             index += 2
-        elif token in ("--speakers", "--speaker-threshold") and index + 1 < len(rest):
+        elif token == "--speakers" and index + 1 < len(rest):
             try:
-                if token == "--speakers":
-                    speakers = int(rest[index + 1])
-                else:
-                    speaker_threshold = float(rest[index + 1])
-                validate_diarization_options(speakers, speaker_threshold)
+                speakers = int(rest[index + 1])
+                validate_diarization_options(speakers)
             except (ValueError, DiarizationError) as exc:
                 print(f"ingest: invalid {token}: {redact_paths(str(exc))}", file=sys.stderr)
                 return 2
@@ -258,7 +255,7 @@ def _ingest(args: Sequence[str]) -> int:
                 "[--transcriber-command COMMAND] [--asr-model NAME] "
                 "[--allow-model-download] [--language CODE] [--frames] "
                 "[--frame-interval SECONDS] [--max-frames N] [--diarize] "
-                "[--speakers N] [--speaker-threshold X] [--diarize-models DIR] [--json]",
+                "[--speakers N] [--diarize-models DIR] [--json]",
                 file=sys.stderr,
             )
             return 2
@@ -277,7 +274,6 @@ def _ingest(args: Sequence[str]) -> int:
                 max_frames=max_frames,
                 diarize=diarize,
                 speakers=speakers,
-                speaker_threshold=speaker_threshold,
                 diarize_models=diarize_models,
             )
     except IngestError as exc:
@@ -603,7 +599,6 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
     max_frames = DEFAULT_MAX_FRAMES
     diarize = False
     speakers: int | None = None
-    speaker_threshold = DEFAULT_SPEAKER_THRESHOLD
     diarize_models = DEFAULT_DIARIZE_MODELS
     rest = list(args[1:])
     index = 0
@@ -624,13 +619,10 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
         elif token == "--diarize-models" and index + 1 < len(rest):
             diarize_models = Path(rest[index + 1])
             index += 2
-        elif token in ("--speakers", "--speaker-threshold") and index + 1 < len(rest):
+        elif token == "--speakers" and index + 1 < len(rest):
             try:
-                if token == "--speakers":
-                    speakers = int(rest[index + 1])
-                else:
-                    speaker_threshold = float(rest[index + 1])
-                validate_diarization_options(speakers, speaker_threshold)
+                speakers = int(rest[index + 1])
+                validate_diarization_options(speakers)
             except (ValueError, DiarizationError) as exc:
                 print(f"ingest: invalid {token}: {redact_paths(str(exc))}", file=sys.stderr)
                 return 2
@@ -671,7 +663,6 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
             max_frames=max_frames,
             diarize=diarize,
             speakers=speakers,
-            speaker_threshold=speaker_threshold,
             diarize_models=diarize_models,
         )
     if json_output:
@@ -1065,7 +1056,7 @@ def _queue_usage() -> None:
         "ingest ITEM [--output DIR] [--transcriber-command COMMAND] "
         "[--asr-model NAME] [--allow-model-download] [--language CODE] "
         "[--frames] [--frame-interval SECONDS] [--max-frames N] "
-        "[--diarize] [--speakers N] [--speaker-threshold X] [--diarize-models DIR]} "
+        "[--diarize] [--speakers N] [--diarize-models DIR]} "
         "[--state PATH] [--json]",
         file=sys.stderr,
     )
