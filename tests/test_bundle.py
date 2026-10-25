@@ -3,6 +3,7 @@
 import json
 import os
 import stat
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,41 @@ def test_local_source_requires_content_identity_and_size() -> None:
 def test_local_source_accepts_content_identity() -> None:
     source = Source(kind=SourceKind.LOCAL, ref=f"sha256:{CONTENT_DIGEST}", bytes=12)
     assert source.ref == f"sha256:{CONTENT_DIGEST}"
+
+
+@pytest.mark.parametrize(
+    "published",
+    [
+        "2026-10-23T12:34:56.125z",
+        "2026-10-23T12:34:56.125Z",
+        "2026-10-23T12:34:56.125+00:00",
+        "2026-10-23T15:04:56.125+02:30",
+        "2026-10-23t12:34:56.125z",
+    ],
+)
+def test_published_accepts_rfc3339_zone_forms(published: str) -> None:
+    payload = {"kind": "url", "ref": "synthetic-date-control", "published": published}
+    source = Source.model_validate_json(json.dumps(payload), strict=True)
+    assert source.published == datetime(2026, 10, 23, 12, 34, 56, 125000, tzinfo=UTC)
+    assert Source.model_validate_json(source.model_dump_json(), strict=True) == source
+
+
+@pytest.mark.parametrize(
+    "published",
+    [
+        "2026-10-23",
+        "2026-10-23 12:34:56Z",
+        "2026-10-23T12:34:56",
+        "2026-02-30T12:34:56z",
+        "2026-10-23T24:00:00Z",
+        "2026-10-23T12:34:56+25:00",
+        "2026-10-23T12:34:56zz",
+    ],
+)
+def test_published_rejects_malformed_rfc3339_dates(published: str) -> None:
+    payload = {"kind": "url", "ref": "synthetic-date-control", "published": published}
+    with pytest.raises(ValidationError):
+        Source.model_validate_json(json.dumps(payload), strict=True)
 
 
 def test_local_source_rejects_a_negative_size() -> None:

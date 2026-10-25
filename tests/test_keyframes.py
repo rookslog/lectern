@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shutil
 import subprocess
 from pathlib import Path
@@ -12,6 +13,7 @@ import pytest
 from lectern import cli
 from lectern.automation import open_state
 from lectern.bundle import Manifest, StageName, StageState
+from lectern.keyframes import extract_frames
 
 FIXTURE = Path(__file__).parent / "fixtures/synthetic_talk.wav"
 
@@ -52,6 +54,86 @@ def video(tmp_path: Path) -> Path:
     subprocess.run(command, capture_output=True, check=True)
     path.with_suffix(".transcript.txt").write_text("Synthetic slides only.", encoding="utf-8")
     return path
+
+
+@pytest.mark.parametrize(("video_offset", "container_start"), [(0.0, 0.0), (2.4, 0.0), (2.4, 5.0)])
+def test_frame_times_preserve_video_offset_from_container_start(
+    video: Path, tmp_path: Path, video_offset: float, container_start: float
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    assert ffmpeg is not None and ffprobe is not None
+    shifted = tmp_path / "offset-slides.mkv"
+    # Shift only video relative to the synthetic audio, then move the whole
+    # container timeline to ensure citations are relative to its common start.
+    subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-threads",
+            "2",
+            "-itsoffset",
+            str(video_offset),
+            "-i",
+            str(video),
+            "-threads",
+            "2",
+            "-i",
+            str(video),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c",
+            "copy",
+            "-output_ts_offset",
+            str(container_start),
+            str(shifted),
+        ],
+        capture_output=True,
+        check=True,
+    )
+    probe = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-show_entries",
+            "format=start_time:stream=codec_type,start_time",
+            "-of",
+            "json",
+            str(shifted),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    timeline = json.loads(probe.stdout)
+    starts = {row["codec_type"]: float(row["start_time"]) for row in timeline["streams"]}
+    assert math.isclose(
+        float(timeline["format"]["start_time"]), container_start, rel_tol=1e-6, abs_tol=1e-12
+    )
+    assert math.isclose(starts["audio"], container_start, rel_tol=1e-6, abs_tol=1e-12)
+    assert math.isclose(
+        starts["video"], container_start + video_offset, rel_tol=1e-6, abs_tol=1e-12
+    )
+
+    bundle = tmp_path / "offset-bundle"
+    bundle.mkdir()
+    document = extract_frames(shifted, bundle, interval=1.0, maximum=3)
+    assert document is not None
+    assert all(
+        math.isclose(frame.t_s, expected, rel_tol=1e-6, abs_tol=0.01)
+        for frame, expected in zip(
+            document.root, [video_offset, video_offset + 4, video_offset + 8], strict=True
+        )
+    )
+    assert [frame.reason for frame in document.root] == ["interval", "scene", "scene"]
+    assert len(list((bundle / "visual/frames").glob("*.jpg"))) == 3
+    for frame in document.root:
+        assert hashlib.sha256((bundle / frame.file).read_bytes()).hexdigest() == frame.sha256
 
 
 def ingest(
