@@ -189,7 +189,7 @@ class Source(ArtifactModel):
         if isinstance(value, str):
             if _RFC3339.fullmatch(value) is None:
                 raise ValueError("published must be an RFC 3339 date-time")
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return datetime.fromisoformat(value.replace("Z", "+00:00").replace("z", "+00:00"))
         return value
 
     @model_validator(mode="before")
