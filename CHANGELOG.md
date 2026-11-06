@@ -19,6 +19,11 @@ versioned release notes will become stricter once preview support stabilizes.
   changing citation validity, exit codes, or the plain summary line (#95).
 - Preserved source-container audio offsets during normalization so transcript
   times align with video (#84, part: audio timeline).
+- Bound initial normalization silence to 600 seconds using a timed, limited
+  `ffprobe` decoded-timestamp preflight. Non-canonical audio now requires
+  `ffprobe`; unknown or excessive initial offsets are refused before PCM output.
+  Canonical WAV copy and ordinary delayed audio are preserved. General duration
+  and interior timestamp-gap expansion remain outside this guard (#84).
 - Refuse ingest replays of damaged owned bundles before provenance repair (#82).
   Queue and one-shot replay now share artifact, completed-stage, and strict
   selected-transcript admission checks; provenance-only recovery is checked again

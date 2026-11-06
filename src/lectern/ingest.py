@@ -56,6 +56,9 @@ from lectern.sources.local import (
 CANONICAL_SAMPLE_RATE = 16_000
 CANONICAL_CHANNELS = 1
 CANONICAL_SAMPLE_WIDTH = 2
+MAX_INITIAL_AUDIO_PADDING_S = 600
+AUDIO_PROBE_TIMEOUT_S = 10
+MAX_AUDIO_PROBE_BYTES = 65_536
 DEFAULT_TRANSCRIBER_TIMEOUT_S = 300
 ASR_INSTALL_HINT = (
     "no local transcription backend is configured for this file; "
@@ -862,6 +865,85 @@ def _strict_number(value: Any, field_name: str) -> float:
     return parsed
 
 
+def _check_initial_audio_padding(source: Path) -> None:
+    probe = shutil.which("ffprobe")
+    if probe is None:
+        raise IngestError("ffprobe is required to check initial audio padding")
+    # Inspect only the first 64 audio packets, not the whole recording. Decoded
+    # frame PTS, not stream.start_time (which can incorrectly be zero), governs
+    # aresample. Check every audio stream so automatic stream selection stays
+    # unchanged; refuse if this bounded window cannot establish all starts.
+    with tempfile.TemporaryFile() as probe_output:
+        try:
+            result = subprocess.run(
+                [
+                    probe,
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "a",
+                    "-read_intervals",
+                    "%+#64",
+                    "-show_frames",
+                    "-show_entries",
+                    "frame=stream_index,pts_time:stream=index:format=start_time",
+                    "-of",
+                    "json",
+                    str(source),
+                ],
+                stdout=probe_output,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=AUDIO_PROBE_TIMEOUT_S,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise IngestError(
+                "ffprobe could not establish initial audio padding (10s limit)"
+            ) from exc
+        if result.returncode != 0:
+            raise IngestError("ffprobe could not establish initial audio padding")
+        probe_output.seek(0)
+        raw = probe_output.read(MAX_AUDIO_PROBE_BYTES + 1)
+    if len(raw) > MAX_AUDIO_PROBE_BYTES:
+        raise IngestError("ffprobe initial audio timing response exceeds 64 KiB")
+    try:
+        payload = json.loads(raw)
+        # Like ffmpeg's default input rebasing, an unspecified container start
+        # (e.g. WAV) uses zero; an explicit invalid value must never default.
+        start = _audio_probe_time(payload["format"].get("start_time", "0"))
+        streams = payload["streams"]
+        frames = payload["frames"]
+        if not isinstance(streams, list) or not streams or not isinstance(frames, list):
+            raise ValueError("missing audio streams or frames")
+        starts: dict[int, float] = {}
+        for frame in cast(list[dict[str, Any]], frames):
+            index = frame["stream_index"]
+            if type(index) is not int:
+                raise ValueError("invalid audio stream index")
+            if index not in starts:
+                starts[index] = _audio_probe_time(frame["pts_time"])
+        for stream in cast(list[dict[str, Any]], streams):
+            index = stream["index"]
+            if type(index) is not int:
+                raise ValueError("invalid audio stream index")
+            offset = starts[index] - start
+            if not math.isfinite(offset):
+                raise ValueError("invalid initial audio offset")
+            if offset > MAX_INITIAL_AUDIO_PADDING_S:
+                raise IngestError("initial audio padding exceeds the 600-second maximum")
+    except (ValueError, TypeError, KeyError, AttributeError, OverflowError, RecursionError) as exc:
+        raise IngestError("ffprobe could not establish finite initial audio padding") from exc
+
+
+def _audio_probe_time(value: object) -> float:
+    if not isinstance(value, str):
+        raise ValueError("missing audio timestamp")
+    timestamp = float(value)
+    if not math.isfinite(timestamp):
+        raise ValueError("non-finite audio timestamp")
+    return timestamp
+
+
 def _normalize_to_canonical_wav(source: Path, output: Path) -> None:
     if _is_canonical_wav(source):
         shutil.copyfile(source, output)
@@ -870,6 +952,8 @@ def _normalize_to_canonical_wav(source: Path, output: Path) -> None:
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise IngestError("ffmpeg is required to normalize non-canonical audio")
+
+    _check_initial_audio_padding(source)
 
     temp_output = output.with_suffix(".tmp.wav")
     result = subprocess.run(

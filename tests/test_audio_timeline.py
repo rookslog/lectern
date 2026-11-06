@@ -23,8 +23,8 @@ FIXTURE = Path(__file__).parent / "fixtures/synthetic_talk.wav"
 @pytest.fixture
 def ffmpeg() -> str:
     binary = shutil.which("ffmpeg")
-    if binary is None:
-        pytest.skip("ffmpeg is required")
+    if binary is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg and ffprobe are required")
     return binary
 
 
@@ -123,6 +123,23 @@ def test_normalization_keeps_audio_only_flac_timing(ffmpeg: str, tmp_path: Path)
     assert math.isclose(duration, 2.9676875, abs_tol=1 / 16000)
 
 
+def test_normalization_keeps_noncanonical_wav_with_unspecified_container_start(
+    ffmpeg: str, tmp_path: Path
+) -> None:
+    media = tmp_path / "stereo.wav"
+    subprocess.run(
+        [ffmpeg, "-v", "error", "-i", str(FIXTURE), "-ac", "2", str(media)],
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    output = tmp_path / "normalized.wav"
+    _normalize_to_canonical_wav(media, output)
+    onset, duration = _wav_times(output)
+    assert math.isclose(onset, 0.00025, abs_tol=1 / 16000)
+    assert math.isclose(duration, 2.9676875, abs_tol=1 / 16000)
+
+
 def test_delayed_audio_transcript_uses_container_timeline(
     ffmpeg: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -160,3 +177,83 @@ def test_delayed_audio_transcript_uses_container_timeline(
     segments = json.loads((bundle / "transcript/segments.json").read_text(encoding="utf-8"))
     assert segments[0]["source"] == "local_command"
     assert math.isclose(segments[0]["start_s"], 2.4, abs_tol=0.05)
+
+
+@pytest.mark.parametrize("shift", [-1, 700])
+def test_normalization_rebases_positive_and_negative_container_starts(
+    ffmpeg: str, tmp_path: Path, shift: int
+) -> None:
+    media = _tiny_timestamp_fixture(ffmpeg, tmp_path, "asetpts=PTS+2/TB", shift)
+    output = tmp_path / "normalized.wav"
+    _normalize_to_canonical_wav(media, output)
+    onset, duration = _wav_times(output)
+    assert math.isclose(onset, 2, abs_tol=0.001)
+    assert math.isclose(duration, 3, abs_tol=0.001)
+
+
+def _tiny_timestamp_fixture(ffmpeg: str, tmp_path: Path, audio_filter: str, shift: int = 0) -> Path:
+    media = tmp_path / "timestamps.mkv"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=s=16x16:r=5:d=4",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=16000:duration=1",
+            "-filter:a",
+            audio_filter,
+            "-c:a",
+            "pcm_s16le",
+            "-c:v",
+            "mpeg4",
+            "-threads",
+            "1",
+            "-avoid_negative_ts",
+            "disabled",
+            "-output_ts_offset",
+            str(shift),
+            str(media),
+        ],
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    return media
+
+
+@pytest.mark.parametrize("audio_filter", ["asetpts=PTS+2/TB", "asetpts='PTS+gte(T,0.5)*2/TB'"])
+def test_start_only_filter_control_still_expands_small_timestamp_gap(
+    ffmpeg: str, tmp_path: Path, audio_filter: str
+) -> None:
+    # Disconfirming control: first_pts alone does not remove interior expansion
+    # on the tested FFmpeg. Both inputs contain only one second of samples.
+    media = _tiny_timestamp_fixture(ffmpeg, tmp_path, audio_filter)
+    for index, resampler in enumerate(("aresample=first_pts=0", "aresample=async=1:first_pts=0")):
+        output = tmp_path / f"control-{index}.wav"
+        subprocess.run(
+            [
+                ffmpeg,
+                "-v",
+                "error",
+                "-i",
+                str(media),
+                "-af",
+                resampler,
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                str(output),
+            ],
+            capture_output=True,
+            check=True,
+            timeout=10,
+        )
+        _, duration = _wav_times(output)
+        assert math.isclose(duration, 3, abs_tol=0.001)
