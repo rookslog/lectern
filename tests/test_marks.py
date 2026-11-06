@@ -417,6 +417,74 @@ def test_unknown_duration_and_missing_end_do_not_invent_evidence() -> None:
     assert mark["binding"] == "none" and mark["segment_id"] is None
 
 
+@pytest.mark.parametrize(
+    ("end_s", "time", "binding", "segment_id"),
+    [
+        (4.005, "00:09.005", "nearest", 0),
+        (4.005, "00:09.004", "nearest", 0),
+        (4.005, "00:09.006", "none", None),
+        (4.005000001, "00:09.005", "nearest", 0),
+        (4.004999999, "00:09.005", "none", None),
+        (4.004999999999999, "00:09.005", "none", None),
+    ],
+)
+def test_fractional_nearest_cutoff_uses_inclusive_decimal_times(
+    end_s: float, time: str, binding: str, segment_id: int | None
+) -> None:
+    from lectern.bundle import TranscriptSegmentRecord
+    from lectern.marks import bind_mark, parse_mark
+
+    segment = TranscriptSegmentRecord(
+        id=0, start_s=1.0, end_s=end_s, text="Synthetic cutoff evidence.", source="synthetic"
+    )
+    parsed = parse_mark(f"{time} ? cutoff", duration_s=20.0)
+    assert parsed is not None
+    mark = bind_mark("synthetic", parsed, [segment])
+    assert (mark["binding"], mark["segment_id"]) == (binding, segment_id)
+
+
+def test_fractional_future_segment_does_not_bind_backward() -> None:
+    from lectern.bundle import TranscriptSegmentRecord
+    from lectern.marks import bind_mark, parse_mark
+
+    segment = TranscriptSegmentRecord(
+        id=0,
+        start_s=9.005000001,
+        end_s=9.006,
+        text="Synthetic future evidence.",
+        source="synthetic",
+    )
+    parsed = parse_mark("00:09.005 ? before speech", duration_s=20.0)
+    assert parsed is not None
+    mark = bind_mark("synthetic", parsed, [segment])
+    assert (mark["binding"], mark["segment_id"]) == ("none", None)
+
+
+def test_fractional_cutoff_preserves_exact_priority_and_nearest_ties() -> None:
+    from lectern.bundle import TranscriptSegmentRecord
+    from lectern.marks import bind_mark, parse_mark
+
+    segments = [
+        TranscriptSegmentRecord(
+            id=segment_id,
+            start_s=start_s,
+            end_s=4.005,
+            text="Synthetic tied evidence.",
+            source="synthetic",
+        )
+        for segment_id, start_s in [(2, 1.0), (0, 2.0), (1, 2.0)]
+    ]
+    cutoff = parse_mark("00:09.005 ? cutoff", duration_s=20.0)
+    assert cutoff is not None
+    nearest = bind_mark("synthetic", cutoff, segments)
+    assert (nearest["binding"], nearest["segment_id"]) == ("nearest", 1)
+
+    covered = parse_mark("00:03 ? covered", duration_s=20.0)
+    assert covered is not None
+    exact = bind_mark("synthetic", covered, segments)
+    assert (exact["binding"], exact["segment_id"]) == ("exact", 2)
+
+
 @pytest.mark.parametrize("time", ["-00:01", "00:60", "60:00", "00:01.1234", "9" * 5000 + ":00:00"])
 def test_invalid_time_components_are_reportable(time: str) -> None:
     from lectern.marks import parse_mark

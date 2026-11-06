@@ -6,6 +6,7 @@ import hashlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from lectern.bundle import TranscriptSegmentRecord
@@ -68,7 +69,14 @@ def bind_mark(
     )
     binding = "exact" if segment is not None else "none"
     if segment is None:
-        preceding = [s for s in segments if s.end_s is not None and 0 <= t_s - s.end_s <= 5]
+        # Construct exact decimal bounds from integer milliseconds, without a tolerance.
+        earliest_end = Decimal(f"{mark.t_ms - 5000}e-3")
+        latest_end = Decimal(f"{mark.t_ms}e-3")
+        preceding = [
+            s
+            for s in segments
+            if s.end_s is not None and earliest_end <= Decimal(str(s.end_s)) <= latest_end
+        ]
         if preceding:
             segment = max(preceding, key=lambda s: (s.end_s, s.start_s, s.id))
             binding = "nearest"
