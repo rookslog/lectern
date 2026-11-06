@@ -82,6 +82,25 @@ and resumability stay centralized.
 - JSON schemas are committed generated artifacts and should be regenerated with
   the source changes that alter them.
 
+## Replay and Recovery
+
+Queue and one-shot ingest replay share a nonwriting admission boundary: the
+candidate must belong to the queue item, source, and source item in the library;
+a candidate registered under another output root answers the replay from there,
+and a colliding directory in the requested root is never adopted. Its registered manifest identity, contained artifact paths, declarations,
+artifact hashes and sizes, completed stages, and strictly read selected
+transcript must all pass before success. `source.json` must be declared exactly
+once, in ACQUIRE. Only its provenance annotation is repairable: the source core
+must validate strictly, and a stale declaration must match the exact serialized
+core without provenance or with the existing writer's expected completed
+provenance under either existing consent mode, including size; an unidentifiable
+old digest is refused, not guessed.
+After the existing provenance writer runs, the same boundary rechecks disk state
+and requires unconditional admission. Refusals preserve bundle files, library
+ownership, and earlier queue completion; a rejected repair restores the writer's
+source and manifest bytes. This does not establish historical input authenticity
+or change library freshness rules.
+
 ## Privacy Posture
 
 Lectern is local-first. Deterministic media stages, transcription, OCR, scene

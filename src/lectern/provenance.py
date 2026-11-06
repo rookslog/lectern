@@ -44,22 +44,14 @@ def attach_provenance_to_bundle(
 ) -> None:
     source_path = bundle_dir / "source.json"
     source_payload = cast(dict[str, Any], json.loads(source_path.read_text(encoding="utf-8")))
-    source_payload["provenance"] = {
-        "state_schema_version": STATE_SCHEMA_VERSION,
-        "source_id": source.id,
-        "source_kind": source.kind.value,
-        "source_name": source.name,
-        "source_item_id": source_item.id,
-        "queue_item_id": queue_item.id,
-        "queue_state": queue_item.state.value,
-        "policy": queue_item.policy.value,
-        "consent": consent,
-        "remote_services": _bundle_remote_services(source_payload),
-    }
-    # Publish atomically: the queue/library rows that point at this bundle are
-    # already committed, and bundle_provenance_needs_repair deliberately gives
-    # up on unparseable base content, so a half-written source.json would be
-    # unrecoverable by the replay repair path.
+    source_payload = source_with_provenance(
+        source_payload,
+        source=source,
+        source_item=source_item,
+        queue_item=queue_item,
+        consent=consent,
+    )
+    # Publish atomically: completion and library registration already committed.
     atomic_write_text(source_path, json.dumps(source_payload, indent=2) + "\n")
 
     manifest = Manifest.load(bundle_dir)
@@ -73,6 +65,33 @@ def attach_provenance_to_bundle(
             updated_outputs.append(output)
     acquire.outputs = updated_outputs
     manifest.save(bundle_dir)
+
+
+def source_with_provenance(
+    source_payload: dict[str, Any],
+    *,
+    source: SourceRecord,
+    source_item: SourceItem,
+    queue_item: QueueItem,
+    consent: str,
+) -> dict[str, Any]:
+    """Build the writer's annotation without modifying the supplied source core."""
+
+    return {
+        **source_payload,
+        "provenance": {
+            "state_schema_version": STATE_SCHEMA_VERSION,
+            "source_id": source.id,
+            "source_kind": source.kind.value,
+            "source_name": source.name,
+            "source_item_id": source_item.id,
+            "queue_item_id": queue_item.id,
+            "queue_state": queue_item.state.value,
+            "policy": queue_item.policy.value,
+            "consent": consent,
+            "remote_services": _bundle_remote_services(source_payload),
+        },
+    }
 
 
 def bundle_provenance_needs_repair(bundle_dir: Path) -> bool:

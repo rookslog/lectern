@@ -5,6 +5,10 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Refuse ingest replays of damaged owned bundles before provenance repair (#82).
+  Queue and one-shot replay now share artifact, completed-stage, and strict
+  selected-transcript admission checks; provenance-only recovery is checked again
+  on disk before reporting success and preserves prior completion on refusal.
 - Raised the writer's manifest schema to `1.1.0` for optional transcript
   language/ASR backend metadata, `source.external`, and stage warnings. Readers
   accept both `1.0.0` and `1.1.0` without migration and refuse other versions,
