@@ -234,6 +234,31 @@ past an hour. JSON includes `bundle_id`, `title`, and segments with `id`, `start
 
 Use `--json` on source, queue, and library commands for machine-readable output.
 
+### Private and unlisted playlists
+
+Lectern never asks for, reads or stores account credentials. A playlist you can
+open while signed in to your own account reaches Lectern through the inbox
+folder above, by a route that stays outside Lectern:
+
+- **Unlisted** playlists open from their link without signing in.
+- **Private** playlists need the owner's own session. The owner runs their own
+  tool, signed in as themselves, and writes media plus `--write-info-json`
+  files into the inbox. For example, with yt-dlp reading the owner's browser
+  session:
+
+  ```bash
+  yt-dlp --cookies-from-browser firefox --write-info-json \
+    -o '~/Lectern/inbox/%(id)s.%(ext)s' 'https://www.youtube.com/playlist?list=PL...'
+  ```
+
+  `--cookies-from-browser` lets yt-dlp use that browser's signed-in session.
+  The cookies stay with yt-dlp and never pass through Lectern, which reads only
+  the `info.json` fields listed above. Then scan the folder as usual.
+
+As with any media, fetching is your own action and rights judgment. Keep the
+inbox private, because it holds your account's media and metadata. Lectern has
+no built-in sign-in (OAuth) for private playlists.
+
 ### For agents: packets and citation checks
 
 `lectern export BUNDLE_ID` exports a ready talk's source facts, layer availability
@@ -380,7 +405,9 @@ not rerun for the current segmenter version.
 ## Current Limits
 
 - YouTube support is limited to public-playlist metadata discovery through an
-  API key. OAuth/private playlist access is not implemented.
+  API key. OAuth/private playlist access is not implemented in Lectern; private
+  playlists can reach Lectern through the inbox folder (see "Private and unlisted
+  playlists").
 - Lectern does not download media, captions, or transcripts from external
   services.
 - MCP/API access, ranked or semantic search, OCR, reference resolution, and

@@ -5,6 +5,9 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Documented how private and unlisted playlists reach Lectern through the inbox
+  folder, with the owner's own tool and session outside Lectern; Lectern still
+  never handles credentials.
 - Fixed timed-caption/local-ASR follow-ups (#89): preserve ordinary repeated
   VTT cues while de-duplicating rolling captions; bind derived language/method
   to language-tagged caption approvals; preserve Hub model IDs while redacting
