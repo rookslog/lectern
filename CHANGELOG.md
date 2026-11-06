@@ -5,6 +5,18 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Fixed timed-caption/local-ASR follow-ups (#89): preserve ordinary repeated
+  VTT cues while de-duplicating rolling captions; bind derived language/method
+  to language-tagged caption approvals; preserve Hub model IDs while redacting
+  local paths; refuse cached-only local models missing `tokenizer.json`; and
+  retain faster-whisper's effective language with a warning when it differs
+  from `--language`. Existing approvals for language-bearing captions change
+  once and require a rescan and approval before ingest; untagged-sidecar
+  approval digests are unchanged. Command/sidecar language overrides still apply.
+- Fixed packet citation round-trips for migrated IDs and negative times, and
+  report oversized numeric tokens as malformed (#94). Citation checks now show
+  uncited paragraph locations/excerpts and pasteable time corrections without
+  changing citation validity, exit codes, or the plain summary line (#95).
 - Refuse ingest replays of damaged owned bundles before provenance repair (#82).
   Queue and one-shot replay now share artifact, completed-stage, and strict
   selected-transcript admission checks; provenance-only recovery is checked again

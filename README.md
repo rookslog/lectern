@@ -99,8 +99,12 @@ With no `--transcriber-command`, ingest reads caption files beside the media:
 `talk.pt-BR.srt`, before falling back to `talk.transcript.txt`. Exact VTT takes
 precedence over exact SRT; otherwise the alphabetically first language-tagged
 filename is selected. The bundle records the selected caption filename and cue
-times. VTT markup is removed and repeated rolling auto-caption lines are
-de-duplicated.
+times. VTT markup is removed. Rolling auto-caption lines are de-duplicated only
+when inline word timings or multi-line carry-over reveal rolling structure;
+ordinary separately timed cues keep identical text. Queue approvals bind the
+derived language and caption method for language-tagged sidecars, so changing
+either requires a rescan and approval. Untagged sidecars keep their existing
+approval digests.
 
 Without a sidecar, the optional `lectern[asr]` extra provides local
 faster-whisper transcription of normalized audio:
@@ -116,9 +120,19 @@ First run: pass `--allow-model-download` once to let
 later runs use the cached model offline. Inference stays local. Both `lectern ingest`
 and `lectern queue ingest` accept `--asr-model NAME`, `--allow-model-download`, and
 optional `--language CODE`. Downloads are disabled by default, and the bundle records
-whether model downloads were allowed.
+whether model downloads were allowed. A local converted-model directory must
+contain `tokenizer.json` in cached-only mode; otherwise ingest refuses it before
+loading the backend, because its tokenizer fallback can fetch from the network.
+Use `--allow-model-download` to permit that fallback. Hub IDs such as
+`org/custom-whisper` are recorded verbatim; existing local model directories and
+explicit filesystem paths are recorded as `local:<name>` without their parent path.
+
 Without a language override, ASR auto-detects the language; captions use the
-filename's language tag when present. The bundle records language and ASR backend
+filename's language tag when present. `--language CODE` overrides command and
+sidecar transcript labels. For faster-whisper it requests a language, but the
+bundle always records the backend's effective language. If that differs from
+the request (for example, with an English-only model), ingest prints one warning
+naming both languages. The bundle records language and ASR backend
 details, including language probability. Captions (including third-party and
 auto-generated captions) and ASR output make no transcript faithfulness claim.
 
@@ -237,7 +251,10 @@ uv run lectern check-citations review.md --state PATH --json
 
 Cite moments as `[t=MM:SS <12hex>#<seg>]` (use `H:MM:SS` past an hour), for example
 `[t=00:01 a1b2c3d4e5f6#1]`. The short ID is the bundle ID's final 12-hex suffix;
-the checker resolves it only when it uniquely matches a registered bundle.
+the checker resolves 12-hex tokens against both ingest suffixes and registered
+bundle ID digests, accepting only a unique bundle match. For non-ingest IDs,
+packets keep the full ID if it matches `[^\s\[\]#]+` and is unchanged by path
+redaction; otherwise they use the first 12 hex digits of its UTF-8 SHA-256 digest.
 Full bundle ID tokens remain accepted. Each packet anchor keeps the full
 `bundle_id`, adds `short_id` and a short-form `cite`, preserves Lectern's content
 hash and canonicalization version, and adds time-range and exact-quote selectors.
@@ -248,11 +265,29 @@ The checker reports `ok`, `time_mismatch`, `unknown_bundle`, `ambiguous_bundle`,
 `unknown_segment`, `unknown_frame`, `not_ready`, or `malformed` for each token
 against current strict registered evidence. Citation-like tokens with invalid
 times or segment/frame numbers count as problems, not uncited paragraphs. Times
-must match the segment start or frame timestamp's whole second. It exits 1 for
-problem tokens and 0 otherwise; uncited paragraphs are counted but do not fail the check. This
-checks references, not whether a claim is supported or whether every claim is
-cited. Short tokens do not carry a historical text hash: after legitimate
-reprocessing, use stored packet anchors to compare historical content.
+must match the segment start or frame timestamp's whole second, truncating the
+absolute value and retaining a leading `-` for negative times. Hours are limited
+to 6 digits and segment/frame indices to 9; longer components are `malformed`.
+It exits 1 for problem tokens and 0 otherwise; uncited paragraphs are counted but
+do not fail the check. This checks references, not whether a claim is supported
+or whether every claim is cited. Short tokens do not carry a historical text
+hash: after legitimate reprocessing, use stored packet anchors to compare
+historical content.
+
+The JSON report includes `uncited`, a list of `{"line": N, "excerpt": "..."}`
+entries: each line is the 1-based position of the paragraph's first non-blank
+line, and each excerpt is that line's first 60 characters, path-redacted and
+escaped for plain output. `uncited_paragraphs` remains an integer equal to the
+list's length. Each citation includes `corrected_token`: for `time_mismatch`,
+the original token with only its time replaced by `expected_time`; otherwise
+`null`. Plain output shows corrections and uncited locations before its
+unchanged summary, for example:
+
+```text
+[t=00:02 a1b2c3d4e5f6#1]: time_mismatch (expected 00:01; use [t=00:01 a1b2c3d4e5f6#1])
+uncited paragraph at line 12: An unsupported claim.
+citations: 0 ok, 1 problems; uncited paragraphs: 1
+```
 
 Visual and speaker presence follow manifest stage states. Translation is absent
 because the current bundle schema has no translation stage or artifact.
