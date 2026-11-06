@@ -2,8 +2,9 @@
 
 A bundle records where it came from: which source, which discovery item, which
 queue item, under which policy and consent, and what remote services the bundle
-itself reports having involved. Completion commits before this runs, so the
-repair check exists to detect a bundle whose provenance never landed.
+itself reports having involved. New ingest completion commits before this runs;
+replay repairs describe a proposed completion, committed only after re-admission.
+The repair check detects bundles whose provenance never landed.
 """
 
 from __future__ import annotations
@@ -51,7 +52,8 @@ def attach_provenance_to_bundle(
         queue_item=queue_item,
         consent=consent,
     )
-    # Publish atomically: completion and library registration already committed.
+    # Publish atomically: new ingests have committed completion and registration;
+    # replay repairs defer their queue update until the bundle is re-admitted.
     atomic_write_text(source_path, json.dumps(source_payload, indent=2) + "\n")
 
     manifest = Manifest.load(bundle_dir)

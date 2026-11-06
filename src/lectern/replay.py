@@ -108,7 +108,7 @@ def admit_replay(
             # A one-shot item may subsequently be reapproved through the queue.
             # Both existing entry points' exact writer bytes are recognizable;
             # no arbitrary historical annotation is inferred from its digest.
-            recognizable = [bare]
+            annotations: list[bytes] = []
             for recorded_consent in {consent, "explicit_cli_invocation", "explicit_queue_approval"}:
                 annotated = source_with_provenance(
                     core,
@@ -117,8 +117,15 @@ def admit_replay(
                     queue_item=replace(queue_item, state=QueueState.COMPLETED),
                     consent=recorded_consent,
                 )
-                recognizable.append((json.dumps(annotated, indent=2) + "\n").encode("utf-8"))
-            if not any(matches_recorded(candidate) for candidate in recognizable):
+                annotations.append((json.dumps(annotated, indent=2) + "\n").encode("utf-8"))
+            # Repair can be interrupted after publishing a fresh annotation but
+            # before declaring it. The old declaration may describe a partial
+            # annotation whose bytes are no longer available. Recognize only
+            # the exact fresh writer bytes over the strictly validated core;
+            # all other declared artifacts are still checked below.
+            if payload not in annotations and not any(
+                matches_recorded(candidate) for candidate in [bare, *annotations]
+            ):
                 raise ValueError(
                     "source.json differs from its declaration beyond identifiable provenance"
                 )

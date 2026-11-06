@@ -613,18 +613,19 @@ class AutomationState(AutomationStateStore):
             raise AutomationError(f"replay refused: {admission.reason}")
         assert library is not None and admission.manifest is not None
         result = IngestResult(bundle_dir=Path(library.bundle_path), manifest=admission.manifest)
+        if admission.outcome == "admit_after_provenance_repair":
+            result = self._repaired_replay_result(
+                result,
+                source=source,
+                source_item=source_item,
+                queue_item_id=queue_item.id,
+                consent=consent,
+            )
+        # Do not repoint a prior completion until repair and re-admission pass.
         self._set_queue_state(
             queue_item.id, QueueState.COMPLETED, bundle_id=candidate_id, clear_error=True
         )
-        if admission.outcome == "admit":
-            return result
-        return self._repaired_replay_result(
-            result,
-            source=source,
-            source_item=source_item,
-            queue_item_id=queue_item.id,
-            consent=consent,
-        )
+        return result
 
     def _repaired_replay_result(
         self,
@@ -645,7 +646,9 @@ class AutomationState(AutomationStateStore):
                 result.bundle_dir,
                 source=source,
                 source_item=source_item,
-                queue_item=self.get_queue_item(queue_item_id),
+                # Describe the completion this replay will commit only after
+                # the repaired bundle passes admission.
+                queue_item=replace(self.get_queue_item(queue_item_id), state=QueueState.COMPLETED),
                 consent=consent,
             )
             admission = admit_replay(
