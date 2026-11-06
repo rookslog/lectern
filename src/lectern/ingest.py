@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from lectern import asr, diarization
+from lectern.audio_timing import AudioTimingError, check_audio_padding
 from lectern.bundle import (
     ArtifactRef,
     ExternalSource,
@@ -924,6 +925,11 @@ def _normalize_to_canonical_wav(source: Path, output: Path) -> None:
     if ffmpeg is None:
         raise IngestError("ffmpeg is required to normalize non-canonical audio")
 
+    try:
+        check_audio_padding(ffmpeg, source)
+    except AudioTimingError as exc:
+        raise IngestError(str(exc)) from exc
+
     temp_output = output.with_suffix(".tmp.wav")
     result = subprocess.run(
         [
@@ -934,6 +940,10 @@ def _normalize_to_canonical_wav(source: Path, output: Path) -> None:
             "-y",
             "-i",
             str(source),
+            # async=1 pads/trims to timestamps without stretching/squeezing;
+            # first_pts=0 retains an audio stream's delay on the container timeline.
+            "-af",
+            "aresample=async=1:first_pts=0",
             "-ac",
             str(CANONICAL_CHANNELS),
             "-ar",
