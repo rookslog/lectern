@@ -211,11 +211,52 @@ def test_packet_marks_survive_reopen_and_use_checkable_segment_times(
     assert markdown.index("## Marks") > markdown.index("## Segments")
     assert str(private) not in json.dumps(packet) + markdown
     assert f"[t=00:01 {short_id}#0] ? why" in markdown
-    assert "[t=00:08] -> revisit (unbound)" in markdown
+    assert "00:08 -> revisit (unbound)" in markdown
     assert run_marks(state_path, bundle_id, "list") == 0
     plain = capsys.readouterr().out
     assert str(private) not in plain and "(unbound)" in plain
     assert "#0] !" in plain
+
+
+@pytest.mark.parametrize("surface", ["listing", "packet"])
+def test_complete_mark_output_has_no_unbound_citation_tokens(
+    marked_bundle: tuple[Path, IngestResult],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    surface: str,
+) -> None:
+    state_path, result = marked_bundle
+    bundle_id = result.manifest.bundle_id
+    file = tmp_path / "notes.txt"
+    file.write_text("00:01.500 ? exact\n00:03 ! nearest\n00:08 -> unbound\n")
+    assert run_marks(state_path, bundle_id, "import", str(file)) == 0
+    capsys.readouterr()
+    assert run_marks(state_path, bundle_id, "list") == 0
+    listing = capsys.readouterr().out
+    short_id = bundle_id.rsplit("-", 1)[1]
+    bound = [f"[t=00:01 {short_id}#0]"] * 2
+    with open_state(state_path) as state:
+        packet = talk_packet(state, bundle_id)
+        assert [mark["cite"] for mark in packet["marks"]] == [*bound, None]
+        text = listing if surface == "listing" else packet_markdown(packet)
+        report = check_citations(state, text)
+    valid = [row["token"] for row in report["citations"] if row["status"] == "ok"]
+    assert valid == (
+        bound
+        if surface == "listing"
+        else [
+            f"[t=00:01 {short_id}#0]",
+            f"[t=00:10 {short_id}#1]",
+            f"[t=1:01:01 {short_id}#2]",
+            *bound,
+        ]
+    )
+    # The complete packet includes a literal format example in its instructions.
+    # That existing non-citation is the only permitted checker problem.
+    problems = [row["token"] for row in report["citations"] if row["status"] != "ok"]
+    assert problems == ([] if surface == "listing" else ["[t=MM:SS <12hex>#<seg>]"])
+    assert report["problems"] == (0 if surface == "listing" else 1)
+    assert "00:08 -> unbound (unbound)" in text
 
 
 @pytest.mark.parametrize("command", ["import", "list"])

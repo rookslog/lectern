@@ -99,6 +99,6 @@ def mark_cite(mark: dict[str, Any], cite_id: str) -> str | None:
 
 
 def mark_line(t_s: float, kind: str | None, text: str, cite: str | None) -> str:
-    prefix = cite if cite is not None else f"[t={format_time(t_s)}]"
+    prefix = cite if cite is not None else format_time(t_s)
     body = " ".join(part for part in (_SYMBOLS.get(kind or "", ""), text) if part)
     return f"{prefix} {body}".rstrip() + (" (unbound)" if cite is None else "")

@@ -3205,9 +3205,11 @@ def test_healthy_schema3_replay_under_schema4_keeps_bundle_bytes(
     """A new writer version must not rewrite already healthy historical bytes."""
     media = copy_fixture(tmp_path / "source")
     output = tmp_path / "bundles"
+    monkeypatch.setattr(provenance_module, "STATE_SCHEMA_VERSION", 3)
     with open_state(tmp_path / "state.sqlite") as state:
         first = _run_admission_case(state, media, output, one_shot=one_shot, command=None)
         before = _bundle_tree(first.bundle_dir)
+        assert json.loads(before["source.json"])["provenance"]["state_schema_version"] == 3
         if stale_receipt:
             receipt = json.loads(before["source.json"])
             receipt["provenance"]["source_name"] = "obsolete pending source name"
@@ -3218,6 +3220,95 @@ def test_healthy_schema3_replay_under_schema4_keeps_bundle_bytes(
         replay = _run_admission_case(state, media, output, one_shot=one_shot, command=None)
         read_selected_evidence(replay.bundle_dir, replay.manifest, require_manifest_integrity=True)
         assert _bundle_tree(first.bundle_dir) == before
+
+
+@pytest.mark.parametrize("one_shot", [False, True], ids=["queue", "one-shot"])
+def test_schema3_database_upgrade_retains_interrupted_provenance_and_index(
+    tmp_path: Path, monkeypatch: MonkeyPatch, one_shot: bool
+) -> None:
+    """A real v3-shaped store migrates without losing declared repair intent."""
+    media = copy_fixture(tmp_path / "source")
+    output = tmp_path / "bundles"
+    state_path = tmp_path / "state.sqlite"
+
+    def skip_marks_schema(store: state_module.AutomationStateStore) -> None:
+        pass
+
+    with monkeypatch.context() as historical:
+        # Use the retained v2/v3 DDL, never create or drop a v4 marks table.
+        # The writer version is simulated; this is not an archived-app fixture.
+        historical.setattr(state_module, "STATE_SCHEMA_VERSION", 3)
+        historical.setattr(provenance_module, "STATE_SCHEMA_VERSION", 3)
+        historical.setattr(
+            state_module.AutomationStateStore, "_create_schema_v4", skip_marks_schema
+        )
+        with open_state(state_path) as state:
+            first = _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+            _partial_provenance(first.bundle_dir, first=True)
+            real_write = provenance_module.atomic_write_text
+
+            def interrupt(path: Path, text: str, **kwargs: Any) -> Path:
+                if path.name == "source.json":
+                    raise SystemExit("synthetic interruption after declaration")
+                return real_write(path, text, **kwargs)
+
+            historical.setattr(provenance_module, "atomic_write_text", interrupt)
+            with pytest.raises(SystemExit, match="synthetic interruption"):
+                _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+    pending = first.bundle_dir / _PENDING_PROVENANCE
+    retained = pending.read_bytes()
+    assert json.loads(retained)["provenance"]["state_schema_version"] == 3
+    source_path = first.bundle_dir / "source.json"
+    assert source_path.read_bytes() != retained
+    declared = Manifest.load(first.bundle_dir).stages[StageName.ACQUIRE].outputs
+    source_ref = next(ref for ref in declared if ref.path == "source.json")
+    assert (source_ref.sha256, source_ref.bytes) == (
+        hashlib.sha256(retained).hexdigest(),
+        len(retained),
+    )
+    with sqlite3.connect(state_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert (
+            connection.execute("SELECT name FROM sqlite_master WHERE name = 'marks'").fetchall()
+            == []
+        )
+        registry = connection.execute("SELECT * FROM library_bundles ORDER BY bundle_id").fetchall()
+        segments = connection.execute("SELECT * FROM segment_index ORDER BY rowid").fetchall()
+        assert registry and segments
+        # Only the receipt can retain the original name after this metadata edit.
+        connection.execute("UPDATE sources SET name = 'renamed after interruption'")
+    before = _bundle_tree(first.bundle_dir)
+    with open_state(state_path) as state:
+        assert _bundle_tree(first.bundle_dir) == before
+        for _ in range(2):
+            replay = _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+            evidence = read_selected_evidence(
+                replay.bundle_dir, replay.manifest, require_manifest_integrity=True
+            )
+            assert evidence.source.provenance is not None
+            assert evidence.source.provenance.state_schema_version == 3
+            assert source_path.read_bytes() == retained
+            assert not pending.exists()
+            assert state.get_library_bundle(first.manifest.bundle_id).status.value == "ready"
+        assert (
+            state.import_marks(first.manifest.bundle_id, "00:00 ? retained", "notes.txt")["added"]
+            == 1
+        )
+        assert len(state.list_marks(first.manifest.bundle_id)) == 1
+    # Opening the interrupted store invalidates unsubstantiated index rows.
+    # The normal reopen refresh must restore them once repair is complete.
+    with open_state(state_path) as state:
+        hits = state.search_segments("Lectern")
+        assert [(hit.bundle_id, hit.segment_id) for hit in hits] == [(first.manifest.bundle_id, 0)]
+    with sqlite3.connect(state_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert (
+            connection.execute("SELECT * FROM library_bundles ORDER BY bundle_id").fetchall()
+            == registry
+        )
+        assert (
+            connection.execute("SELECT * FROM segment_index ORDER BY rowid").fetchall() == segments
+        )
 
 
 @pytest.mark.parametrize("one_shot", [False, True], ids=["queue", "one-shot"])
