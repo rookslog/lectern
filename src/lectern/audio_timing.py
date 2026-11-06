@@ -89,6 +89,9 @@ def check_audio_padding(ffmpeg: str, source: Path) -> None:
         rb"nb_samples:(?P<samples>[0-9]{1,10}) checksum:[0-9A-Fa-f]+ "
         rb"plane_checksums: \[[ 0-9A-Fa-f]+\]"
     )
+    auxiliary = re.compile(
+        re.escape(prefix) + rb"(?P<pointer>0x[0-9a-fA-F]+)\]   side data - [^\r\n]+"
+    )
     clock = _SampleClock()
 
     def accept(line: bytes) -> None:
@@ -97,6 +100,16 @@ def check_audio_padding(ffmpeg: str, source: Path) -> None:
         if line.startswith(prefix):
             match = record.fullmatch(line)
             if match is None:
+                side_data = auxiliary.fullmatch(line)
+                if (
+                    side_data is not None
+                    and clock.frames > 0
+                    and side_data["pointer"] == clock.signature[0]
+                ):
+                    # Authentic auxiliary diagnostics carry no timing. Only
+                    # the already observed filter may emit them; do not skip
+                    # malformed n/pts records merely mentioning side data.
+                    return
                 raise AudioTimingError("audio timing analysis has a malformed frame record")
             clock.observe(match)
         # All other diagnostics, including static forged ashowinfo messages,

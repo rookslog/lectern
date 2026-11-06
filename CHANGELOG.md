@@ -5,6 +5,9 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Preserve 5.1 AC3 normalization by accepting bounded, authentic FFmpeg
+  side-data diagnostics from an already observed analysis filter. Exact tagged
+  frame parsing, continuity checks, and the aggregate padding budget are unchanged.
 - Added experimental S5 listening marks: idempotent UTF-8 import and listing,
   exact/nearby transcript binding, and marks in JSON/Markdown agent packets.
   Marks stay in local state, not bundle evidence; following the retrieval-index
