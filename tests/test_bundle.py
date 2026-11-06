@@ -228,6 +228,64 @@ def test_atomic_write_temporary_is_restricted_before_content(
     assert target.read_text(encoding="utf-8") == '{"a": 1}\n'
 
 
+@pytest.mark.parametrize("umask", [0o022, 0o002])
+@pytest.mark.parametrize(
+    ("existing_mode", "ceiling", "expected"),
+    [
+        (None, None, None),
+        (0o640, None, 0o640),
+        (None, 0o600, 0o600),
+        (None, 0o400, 0o400),
+        (0o644, 0o600, 0o600),
+        (0o400, 0o600, 0o400),
+        (0o600, 0o400, 0o400),
+    ],
+)
+def test_atomic_write_permission_ceiling_before_content_and_replace(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    umask: int,
+    existing_mode: int | None,
+    ceiling: int | None,
+    expected: int | None,
+) -> None:
+    """A ceiling must restrict creation, without broadening existing destinations."""
+    target = tmp_path / "receipt.json"
+    if existing_mode is not None:
+        target.write_text("old\n")
+        target.chmod(existing_mode)
+    if expected is None:
+        expected = 0o644 if umask == 0o022 else 0o664
+    before_write: list[int] = []
+    before_replace: list[int] = []
+    real_fdopen = os.fdopen
+    real_replace = os.replace
+
+    def spy_fdopen(fd: int, *args: object, **kwargs: object) -> object:
+        before_write.append(stat.S_IMODE(os.fstat(fd).st_mode))
+        assert os.fstat(fd).st_size == 0
+        return real_fdopen(fd, *args, **kwargs)  # type: ignore[arg-type]
+
+    def spy_replace(source: Path, destination: Path) -> None:
+        assert destination == target
+        assert source.read_text() == "restricted content\n"
+        before_replace.append(stat.S_IMODE(source.stat().st_mode))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "fdopen", spy_fdopen)
+    monkeypatch.setattr(os, "replace", spy_replace)
+    previous_umask = os.umask(umask)
+    try:
+        atomic_write_text(target, "restricted content\n", permission_ceiling=ceiling)
+    finally:
+        os.umask(previous_umask)
+    assert before_write == [expected]
+    assert before_replace == [expected]
+    assert stat.S_IMODE(target.stat().st_mode) == expected
+    assert target.read_text() == "restricted content\n"
+    assert list(tmp_path.iterdir()) == [target]
+
+
 @pytest.mark.parametrize("raw_bytes", [12, 12.0])
 def test_manifest_load_preserves_integral_local_byte_compatibility(
     tmp_path: Path, raw_bytes: int | float
