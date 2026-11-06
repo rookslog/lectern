@@ -16,6 +16,7 @@ from pytest import MonkeyPatch
 
 from lectern import automation
 from lectern import ingest as ingest_module
+from lectern import provenance as provenance_module
 from lectern import state as state_module
 from lectern.automation import (
     STATE_SCHEMA_VERSION,
@@ -2140,7 +2141,7 @@ def test_replay_admission_rechecks_repair_disk_state(
 @pytest.mark.parametrize(
     "provenance", [{"source_id": "legacy"}, "legacy"], ids=["partial", "string"]
 )
-@pytest.mark.parametrize("window", ["before-source", "before-manifest"])
+@pytest.mark.parametrize("window", ["before-declaration", "after-declaration"])
 def test_replay_admission_recovers_interrupted_provenance_repair(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -2165,15 +2166,18 @@ def test_replay_admission_recovers_interrupted_provenance_repair(
             raise SystemExit("synthetic repair interruption")
 
         with monkeypatch.context() as patch:
-            if window == "before-source":
-                patch.setattr(automation, "attach_provenance_to_bundle", crash)
-            else:
+            if window == "before-declaration":
                 patch.setattr(Manifest, "save", crash)
+            else:
+                # The manifest is declared first; die before source.json is published.
+                patch.setattr(provenance_module, "atomic_write_text", crash)
             with pytest.raises(SystemExit, match="synthetic repair interruption"):
                 _run_admission_case(state, media, output, one_shot=one_shot, command=None)
         interrupted = _bundle_tree(first.bundle_dir)
-        assert interrupted[MANIFEST_NAME] == before[MANIFEST_NAME]
-        assert (interrupted["source.json"] == before["source.json"]) == (window == "before-source")
+        assert interrupted["source.json"] == before["source.json"]
+        assert (interrupted[MANIFEST_NAME] == before[MANIFEST_NAME]) == (
+            window == "before-declaration"
+        )
 
     # Reopen the store as a new process would, rather than retaining its snapshot.
     with open_state(state_path) as state:
@@ -2193,6 +2197,26 @@ def test_replay_admission_recovers_interrupted_provenance_repair(
         assert {k: v for k, v in after.items() if k not in {"source.json", MANIFEST_NAME}} == {
             k: v for k, v in before.items() if k not in {"source.json", MANIFEST_NAME}
         }
+
+
+@pytest.mark.parametrize("one_shot", [False, True], ids=["queue", "one-shot"])
+@pytest.mark.parametrize("field", ["method", "evidence_limit"])
+def test_replay_admission_refuses_edited_core_with_fresh_provenance(
+    tmp_path: Path, one_shot: bool, field: str
+) -> None:
+    """An edited but valid core must not rebind its stale declaration."""
+    media = copy_fixture(tmp_path / "source")
+    output = tmp_path / "bundles"
+    with open_state(tmp_path / "state.sqlite") as state:
+        first = _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+        source_path = first.bundle_dir / "source.json"
+        payload = json.loads(source_path.read_text())
+        payload["transcript"][field] = "edited after ingest"
+        source_path.write_text(json.dumps(payload, indent=2) + "\n")
+        before = _bundle_tree(first.bundle_dir)
+        with pytest.raises(AutomationError, match="replay refused"):
+            _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+        assert _bundle_tree(first.bundle_dir) == before
 
 
 @pytest.mark.parametrize("one_shot", [False, True], ids=["queue", "one-shot"])
@@ -2254,7 +2278,7 @@ def test_rejected_replay_repair_preserves_latest_missing_bundle_id(
 @pytest.mark.parametrize("one_shot", [False, True], ids=["queue", "one-shot"])
 @pytest.mark.parametrize("command_replay", [False, True], ids=["planned", "command"])
 @pytest.mark.parametrize("damaged", [False, True], ids=["repair", "refuse"])
-@pytest.mark.parametrize("window", ["before-source", "before-manifest"])
+@pytest.mark.parametrize("window", ["before-declaration", "after-declaration"])
 def test_replay_admission_after_completion_commit_crash(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

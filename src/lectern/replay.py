@@ -118,14 +118,10 @@ def admit_replay(
                     consent=recorded_consent,
                 )
                 annotations.append((json.dumps(annotated, indent=2) + "\n").encode("utf-8"))
-            # Repair can be interrupted after publishing a fresh annotation but
-            # before declaring it. The old declaration may describe a partial
-            # annotation whose bytes are no longer available. Recognize only
-            # the exact fresh writer bytes over the strictly validated core;
-            # all other declared artifacts are still checked below.
-            if payload not in annotations and not any(
-                matches_recorded(candidate) for candidate in [bare, *annotations]
-            ):
+            # The writer declares before it publishes, so an interrupted repair
+            # leaves a declaration of the fresh annotation of this same core.
+            # Recognising current bytes alone would let an edited core rebind.
+            if not any(matches_recorded(candidate) for candidate in [bare, *annotations]):
                 raise ValueError(
                     "source.json differs from its declaration beyond identifiable provenance"
                 )

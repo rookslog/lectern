@@ -9,6 +9,7 @@ The repair check detects bundles whose provenance never landed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, cast
@@ -52,21 +53,27 @@ def attach_provenance_to_bundle(
         queue_item=queue_item,
         consent=consent,
     )
-    # Publish atomically: new ingests have committed completion and registration;
-    # replay repairs defer their queue update until the bundle is re-admitted.
-    atomic_write_text(source_path, json.dumps(source_payload, indent=2) + "\n")
-
+    text = json.dumps(source_payload, indent=2) + "\n"
+    encoded = text.encode("utf-8")
+    # Declare before publishing. A kill between the two writes leaves a manifest
+    # that declares exactly the writer's annotation of the current source core,
+    # which replay admission recognises and repairs; the core stays bound to an
+    # existing declaration at every point. (Publishing source.json first left a
+    # stale declaration that no core-bound rule could recognise.) New ingests
+    # have committed completion and registration; replay repairs defer their
+    # queue update until the bundle is re-admitted.
     manifest = Manifest.load(bundle_dir)
     acquire = manifest.stages[StageName.ACQUIRE]
-    updated_outputs: list[ArtifactRef] = []
-    for output in acquire.outputs:
-        if output.path == "source.json":
-            digest, size = digest_and_size(source_path)
-            updated_outputs.append(ArtifactRef(path=output.path, sha256=digest, bytes=size))
-        else:
-            updated_outputs.append(output)
-    acquire.outputs = updated_outputs
+    acquire.outputs = [
+        ArtifactRef(
+            path=output.path, sha256=hashlib.sha256(encoded).hexdigest(), bytes=len(encoded)
+        )
+        if output.path == "source.json"
+        else output
+        for output in acquire.outputs
+    ]
     manifest.save(bundle_dir)
+    atomic_write_text(source_path, text)
 
 
 def source_with_provenance(
