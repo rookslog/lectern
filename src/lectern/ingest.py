@@ -839,6 +839,10 @@ def _normalize_to_canonical_wav(source: Path, output: Path) -> None:
             "-y",
             "-i",
             str(source),
+            # async=1 pads/trims to timestamps without stretching/squeezing;
+            # first_pts=0 retains an audio stream's delay on the container timeline.
+            "-af",
+            "aresample=async=1:first_pts=0",
             "-ac",
             str(CANONICAL_CHANNELS),
             "-ar",

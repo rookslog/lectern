@@ -5,6 +5,8 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Preserved source-container audio offsets during normalization so transcript
+  times align with video (#84, part: audio timeline).
 - Raised the writer's manifest schema to `1.1.0` for optional transcript
   language/ASR backend metadata, `source.external`, and stage warnings. Readers
   accept both `1.0.0` and `1.1.0` without migration and refuse other versions,
