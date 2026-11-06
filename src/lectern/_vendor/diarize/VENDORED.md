@@ -4,7 +4,7 @@
 # Vendored: diarize 0.1.2
 
 - Upstream: https://pypi.org/project/diarize/0.1.2/ (repository: https://github.com/FoxNoseTech/diarize)
-- Wheel sha256 (first 16 hex): 848b798e471e452e
+- Wheel sha256: 848b798e471e452e900d924ad98e4f1321812ba1a3eb63bdc22f15b0756c90f5
 - Licence: Apache License 2.0, see `LICENSE` in this directory. These files stay under Apache-2.0;
   the rest of Lectern is MIT.
 - The first commit adds the files unmodified. Later commits adapt them for Lectern: voice

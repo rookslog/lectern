@@ -164,8 +164,8 @@ auto-generated captions) and ASR output make no transcript faithfulness claim.
 
 `--diarize` adds local, anonymous speaker labels (`S1`, `S2`, …) to panels,
 interviews and conversations. Install the optional `lectern[diarize]` extra.
-Automatic speaker counting is the default and is usually better; give
-`--speakers N` only if you are sure of the count:
+Automatic speaker counting is the default; `--speakers N` constrains the count.
+Neither mode guarantees the speaker count or attribution:
 
 ```bash
 uv sync --extra diarize
