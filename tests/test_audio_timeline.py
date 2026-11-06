@@ -29,6 +29,42 @@ def ffmpeg() -> str:
     return binary
 
 
+@pytest.mark.parametrize("layout,codec", [("5.1", "ac3"), ("stereo", "ac3"), ("stereo", "eac3")])
+def test_normalization_accepts_tiny_ac3_with_authentic_side_data(
+    ffmpeg: str, tmp_path: Path, layout: str, codec: str
+) -> None:
+    media = tmp_path / f"synthetic.{codec}"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-nostdin",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"anullsrc=r=48000:cl={layout}",
+            "-t",
+            "1",
+            "-c:a",
+            codec,
+            "-threads",
+            "1",
+            str(media),
+        ],
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    assert media.stat().st_size < 100_000
+    output = tmp_path / "normalized.wav"
+    _normalize_to_canonical_wav(media, output)
+    with wave.open(str(output), "rb") as audio:
+        assert (audio.getframerate(), audio.getnchannels(), audio.getsampwidth()) == (16000, 1, 2)
+        assert math.isclose(audio.getnframes() / 16000, 1, abs_tol=0.05)
+    assert not output.with_suffix(".tmp.wav").exists()
+
+
 def _video(ffmpeg: str, tmp_path: Path, offset: float) -> Path:
     media = tmp_path / "talk.mkv"
     subprocess.run(

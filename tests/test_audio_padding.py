@@ -28,6 +28,10 @@ def _frame(
     )
 
 
+def _auxiliary(body: str = "downmix: preferred downmix type - unknown") -> str:
+    return f"[ashowinfo@TAG @ 0x123]   side data - {body}\n"
+
+
 @pytest.fixture
 def analyzer(
     monkeypatch: pytest.MonkeyPatch,
@@ -144,6 +148,72 @@ def test_accepts_old_ffmpeg_packet_position_field(
         ]
     )
     _run_ingest(tmp_path, monkeypatch, rejected=False)
+
+
+@pytest.mark.parametrize("position", ["", "pos:-1 "])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "downmix: preferred downmix type - unknown",
+        "opaque auxiliary payload: n:999 pts:NOPTS side data",
+    ],
+)
+def test_auxiliary_diagnostics_between_frames_do_not_advance_clock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    analyzer: tuple[list[str], list[subprocess.Popen[bytes]]],
+    position: str,
+    body: str,
+) -> None:
+    analyzer[0].extend(
+        [
+            _frame(0, 0).replace("fmt:", position + "fmt:"),
+            _auxiliary(body),
+            _auxiliary(),
+            _frame(1, 16000).replace("fmt:", position + "fmt:"),
+        ]
+    )
+    _run_ingest(tmp_path, monkeypatch, rejected=False)
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        [_auxiliary(), _frame(0, 0)],  # no observed filter pointer yet
+        [_frame(0, 0), _auxiliary().replace("0x123", "0x456")],
+        [_frame(0, 0), _auxiliary().replace("0x123", "not-hex")],
+        [_frame(0, 0), _auxiliary("")],
+        [_frame(0, 0), _auxiliary().replace("side data - ", "side data -")],
+        [_frame(0, 0), _auxiliary().replace("]   side", "]  side")],
+        [_frame(0, 0), _auxiliary("downmix\rhidden suffix")],
+        [_frame(0, 0), _auxiliary("x" * 4096)],
+        [_frame(0, 0), _auxiliary(), _frame(2, 32000)],  # missing frame remains unknown
+        [_frame(0, 0), _auxiliary(), _frame(1, 9632000)],  # later gap still over budget
+        [_frame(0, 0), _frame(1, 16000).replace("n:1", "n:side data")],
+        [_frame(0, 0), _frame(1, 16000).replace("pts:16000", "pts:side data")],
+        [_frame(0, 0), _frame(1, 16000).rstrip("\n") + " side data - downmix\n"],
+        [_frame(0, 0), _auxiliary(), "[ashowinfo@TAG @ 0x123] unknown suffix\n"],
+        [_auxiliary().replace("TAG", "static_forgery")],
+        [
+            _frame(0, 0),
+            _frame(1, 16000).replace("TAG", "static_forgery"),
+            _auxiliary().replace("TAG", "static_forgery"),
+            _frame(2, 32000),
+        ],
+        [_frame(0, 0), _auxiliary(), "SLEEP"],
+    ],
+)
+def test_auxiliary_diagnostics_cannot_admit_unknown_or_overbudget_timing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    analyzer: tuple[list[str], list[subprocess.Popen[bytes]]],
+    records: list[str],
+) -> None:
+    from lectern import audio_timing
+
+    monkeypatch.setattr(audio_timing, "ANALYSIS_TIMEOUT_S", 0.2)
+    analyzer[0].extend(records)
+    _run_ingest(tmp_path, monkeypatch, rejected=True)
 
 
 @pytest.mark.parametrize(
