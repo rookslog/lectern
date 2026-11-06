@@ -164,9 +164,52 @@ def export(bundle_id: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
 
 
 def test_video_frames_are_deduplicated_declared_and_citeable(
-    video: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    video: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    bundle, bundle_id = ingest(video, tmp_path, capsys, "--frames")
+    from lectern.diarization import SpeakerTurn
+
+    class FakeDiarizer:
+        def diarize(self, audio: Path) -> tuple[SpeakerTurn, ...]:
+            assert audio.is_file()
+            return (SpeakerTurn(0.0, 4.0, 7), SpeakerTurn(4.0, 12.0, 3))
+
+    def fake_factory(
+        models_dir: Path, *, speakers: int | None, allow_model_download: bool
+    ) -> FakeDiarizer:
+        assert models_dir == tmp_path / "models"
+        assert speakers == 2 and not allow_model_download
+        return FakeDiarizer()
+
+    # Exercise the composed CLI options with real synthetic frame extraction;
+    # only model inference is replaced. Dropping either merged Markdown branch
+    # must lose a speaker-prefixed segment or a bound listening mark below.
+    monkeypatch.setattr("lectern.diarization.create_diarizer", fake_factory)
+    video.with_suffix(".vtt").write_text(
+        "WEBVTT\n\n00:00.000 --> 00:04.000\nA proposed map.\n\n"
+        "00:04.000 --> 00:08.000\nA second perspective.\n\n"
+        "00:08.000 --> 00:12.000\nA closing thought.\n",
+        encoding="utf-8",
+    )
+    speaker_options = [
+        "--diarize",
+        "--speakers",
+        "2",
+        "--diarize-models",
+        str(tmp_path / "models"),
+        "--language",
+        "fr",
+    ]
+    bundle, bundle_id = ingest(video, tmp_path, capsys, "--frames", *speaker_options)
+    notes = tmp_path / "notes.txt"
+    notes.write_text("00:04 ? why this perspective\n", encoding="utf-8")
+    assert (
+        cli.main(["marks", "import", bundle_id, str(notes), "--state", str(tmp_path / "state.db")])
+        == 0
+    )
+    assert capsys.readouterr().out.strip() == "added 1, already present 0, malformed 0"
     frames = json.loads((bundle / "visual/frames.json").read_text())
     assert len(frames) == 3
     assert all(abs(row["t_s"] - time) <= 1 for row, time in zip(frames, [0, 4, 8], strict=True))
@@ -183,6 +226,21 @@ def test_video_frames_are_deduplicated_declared_and_citeable(
         assert row["width"] == 160 and row["height"] == 90
         assert hashlib.sha256((bundle / row["file"]).read_bytes()).hexdigest() == row["sha256"]
     packet = export(bundle_id, tmp_path, capsys)
+    assert packet["layers"]["transcript"]["language"] == "fr"
+    assert packet["layers"]["speakers"]["speaker_count"] == 2
+    assert packet["layers"]["speakers"]["count_source"] == "given"
+    assert [row["speaker"] for row in packet["segments"]] == ["S1", "S2", "S2"]
+    short = bundle_id.rsplit("-", 1)[1]
+    assert packet["marks"] == [
+        {
+            "t": 4.0,
+            "kind": "question",
+            "text": "why this perspective",
+            "binding": "exact",
+            "cite": f"[t=00:04 {short}#1]",
+        }
+    ]
+    assert str(tmp_path) not in json.dumps(packet)
     assert packet["layers"]["visual"] == {
         "present": True,
         "frame_count": 3,
@@ -196,7 +254,6 @@ def test_video_frames_are_deduplicated_declared_and_citeable(
     assert cli.main(check) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["ok"] == 3 and report["problems"] == 0
-    short = bundle_id.rsplit("-", 1)[1]
     review.write_text(f"[t=00:05 {short}#f1]\n\n[t=00:00 {short}#f99]", encoding="utf-8")
     assert cli.main(check) == 1
     assert [row["status"] for row in json.loads(capsys.readouterr().out)["citations"]] == [
@@ -208,6 +265,16 @@ def test_video_frames_are_deduplicated_declared_and_citeable(
         == 0
     )
     markdown = capsys.readouterr().out
+    assert f"[t=00:00 {short}#0] S1: A proposed map." in markdown
+    assert f"[t=00:04 {short}#1] S2: A second perspective." in markdown
+    assert f"[t=00:04 {short}#1] ? why this perspective" in markdown
+    assert "## Segments" in markdown and "## Marks" in markdown
+    assert str(tmp_path) not in markdown
+    combined_rows = [line for line in markdown.splitlines() if line.startswith("[t=")]
+    review.write_text("\n\n".join(combined_rows), encoding="utf-8")
+    assert cli.main(check) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] == 7 and report["problems"] == 0
     assert "## Frames" in markdown and "#f<index>" in markdown
     assert f"[t=00:04 {short}#f1] frames/0001.jpg (scene)" in markdown
     frame_rows = [
@@ -219,6 +286,15 @@ def test_video_frames_are_deduplicated_declared_and_citeable(
     assert report["ok"] == 3 and report["problems"] == 0
     assert cli.main(["library", "show", bundle_id, "--state", str(tmp_path / "state.db")]) == 0
     assert "Visual: yes (3 frames)" in capsys.readouterr().out
+    assert (
+        cli.main(["library", "show", bundle_id, "--state", str(tmp_path / "state.db"), "--json"])
+        == 0
+    )
+    library = capsys.readouterr().out
+    assert str(tmp_path) not in library
+    info = json.loads(library)
+    assert info["status"] == "ready"
+    assert info["layers"] == {"transcript": True, "visual": True, "speakers": True}
     # Queue options must not replay the differently processed one-shot bundle.
     with open_state(tmp_path / "state.db") as state:
         queue_id = state.get_library_bundle(bundle_id).queue_item_id
@@ -234,6 +310,7 @@ def test_video_frames_are_deduplicated_declared_and_citeable(
                 "1",
                 "--max-frames",
                 "2",
+                *speaker_options,
                 "--output",
                 str(tmp_path / "bundles"),
                 "--state",
@@ -248,6 +325,14 @@ def test_video_frames_are_deduplicated_declared_and_citeable(
     rows = json.loads((Path(limited["bundle_dir"]) / "visual/frames.json").read_text())
     assert len(rows) == 2
     assert all(abs(row["t_s"] - time) <= 1 for row, time in zip(rows, [0, 4], strict=True))
+    queued_packet = export(limited["bundle_id"], tmp_path, capsys)
+    assert queued_packet["layers"]["transcript"]["language"] == "fr"
+    assert queued_packet["layers"]["visual"]["frame_count"] == 2
+    assert queued_packet["layers"]["speakers"]["speaker_count"] == 2
+    assert [row["speaker"] for row in queued_packet["segments"]] == ["S1", "S2", "S2"]
+    # Marks belong to the original bundle, not to a differently processed ingest.
+    assert queued_packet["marks"] == []
+    assert export(bundle_id, tmp_path, capsys)["marks"] == packet["marks"]
     # Strict artifact model round-trips the actual index.
     from lectern.bundle import FramesDocument
 

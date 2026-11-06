@@ -185,6 +185,34 @@ backend (or that sidecar hints were not applied), and talk packets include terms
 in `layers.transcript` when present, subject to their existing path redaction.
 Lectern passes your terms to the transcriber and records them; it makes no claim that they improve accuracy.
 
+### Speakers
+
+`--diarize` adds local, anonymous speaker labels (`S1`, `S2`, …) to panels,
+interviews and conversations. Install the optional `lectern[diarize]` extra.
+Automatic speaker counting is the default; `--speakers N` constrains the count.
+Neither mode guarantees the speaker count or attribution:
+
+```bash
+uv sync --extra diarize
+uv run lectern ingest panel.wav --diarize --allow-model-download
+```
+
+Both one-shot and queued ingest accept these options. Models are loaded locally
+by default from `.lectern/cache/diarize`, following the project-local state-dir
+convention; choose another directory with `--diarize-models DIR`.
+`--allow-model-download` fetches two ungated models over HTTPS: Silero VAD v6
+(`silero_vad.onnx`) and WeSpeaker ResNet34-LM (`embedding.onnx`). Each fetch
+verifies the pinned SHA-256 digest and size before publishing the file atomically.
+Later runs need no download flag. No media is sent to a service. Local Kaldi
+filterbank features with mean normalization feed the embeddings; the vendored
+`diarize` 0.1.2 pipeline estimates the count and uses spectral clustering with
+temporal smoothing. To override automatic counting, add e.g. `--speakers 3`.
+
+The bundle declares `transcript/diarization.json`; packets, `lectern transcript`,
+and `library show` expose the speaker layer. Labels are anonymous clusters, not
+identities. Overlapping speech is attributed to one speaker; similar voices may
+merge and one voice may split. No core feature requires speaker labels.
+
 Before planning or processing, Lectern captures a private temporary media copy
 and the sidecar bytes, if present. Queued ingest checks those captured inputs
 against the existing approval before normalization or transcription; planning,

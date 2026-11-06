@@ -1,0 +1,104 @@
+{
+  "$defs": {
+    "DiarizationTurn": {
+      "additionalProperties": false,
+      "properties": {
+        "start_s": {
+          "minimum": 0,
+          "title": "Start S",
+          "type": "number"
+        },
+        "end_s": {
+          "minimum": 0,
+          "title": "End S",
+          "type": "number"
+        },
+        "speaker": {
+          "pattern": "^S[1-9][0-9]*$",
+          "title": "Speaker",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start_s",
+        "end_s",
+        "speaker"
+      ],
+      "title": "DiarizationTurn",
+      "type": "object"
+    },
+    "SegmentSpeaker": {
+      "additionalProperties": false,
+      "properties": {
+        "segment_id": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "title": "Segment Id",
+          "type": "integer"
+        },
+        "speaker": {
+          "anyOf": [
+            {
+              "pattern": "^S[1-9][0-9]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Speaker"
+        }
+      },
+      "required": [
+        "segment_id",
+        "speaker"
+      ],
+      "title": "SegmentSpeaker",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "`transcript/diarization.json`, anonymous local speaker evidence.",
+  "properties": {
+    "method": {
+      "title": "Method",
+      "type": "string"
+    },
+    "speaker_count": {
+      "minimum": 0,
+      "title": "Speaker Count",
+      "type": "integer"
+    },
+    "count_source": {
+      "enum": [
+        "given",
+        "estimated"
+      ],
+      "title": "Count Source",
+      "type": "string"
+    },
+    "turns": {
+      "items": {
+        "$ref": "#/$defs/DiarizationTurn"
+      },
+      "title": "Turns",
+      "type": "array"
+    },
+    "segment_speakers": {
+      "items": {
+        "$ref": "#/$defs/SegmentSpeaker"
+      },
+      "title": "Segment Speakers",
+      "type": "array"
+    }
+  },
+  "required": [
+    "method",
+    "speaker_count",
+    "count_source",
+    "turns",
+    "segment_speakers"
+  ],
+  "title": "DiarizationDocument",
+  "type": "object"
+}

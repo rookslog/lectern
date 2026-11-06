@@ -18,6 +18,7 @@ would fail the run in a way that has nothing to do with what any test does.
 
 from __future__ import annotations
 
+import importlib
 import socket
 from collections.abc import Iterator
 from typing import Any, cast
@@ -55,6 +56,10 @@ def deny_network_by_default(
         yield
         return
 
+    # SSL subclasses socket.socket at import time. Initialize it while the
+    # constructor is still a class so later guarded imports remain usable.
+    importlib.import_module("ssl")
+
     def refuse(*args: Any, **kwargs: Any) -> socket.socket:
         raise NetworkAccessDenied(
             "this test attempted to open a network socket; unit tests are network-free. "
@@ -84,3 +89,13 @@ def deny_real_asr_models(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
         raise ImportError("real ASR models are disabled in unit tests; inject a fake backend")
 
     monkeypatch.setattr("lectern.asr.create_asr_backend", unavailable)
+
+    def unavailable_diarizer() -> None:
+        raise ImportError(
+            "real diarization models are disabled in unit tests; inject a fake diarizer"
+        )
+
+    # Guard below file-resolution so missing-model acceptance checks remain real,
+    # but neither cached weights nor a direct constructor can load VAD/embedding models.
+    # The backend must call this boundary before constructing either model.
+    monkeypatch.setattr("lectern.diarization._load_sherpa", unavailable_diarizer)

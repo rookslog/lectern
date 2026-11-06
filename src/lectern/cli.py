@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import shutil
@@ -26,7 +27,19 @@ from lectern.automation import (
     preflight_youtube_playlist,
 )
 from lectern.bundle import StageName, StageState, export_artifact_schemas, export_json_schema
-from lectern.evidence import SelectedEvidence, read_frames, read_transcript_metadata
+from lectern.diarization import (
+    DEFAULT_DIARIZE_MODELS,
+    DIARIZATION_IMPORTS,
+    MODEL_FILES,
+    DiarizationError,
+    validate_diarization_options,
+)
+from lectern.evidence import (
+    SelectedEvidence,
+    read_diarization,
+    read_frames,
+    read_transcript_metadata,
+)
 from lectern.ingest import IngestError
 from lectern.keyframes import (
     DEFAULT_FRAME_INTERVAL,
@@ -117,6 +130,26 @@ def _doctor() -> int:
         else f"not configured; set {DEFAULT_YOUTUBE_API_KEY_ENV} for YouTube discovery"
     )
     print(f"youtube: OPTIONAL ({youtube_status})")
+    unavailable: list[str] = []
+    for module in DIARIZATION_IMPORTS:
+        try:
+            importlib.import_module(module)
+        except Exception:
+            unavailable.append(module)
+    backend_status = (
+        "diarize extra importable"
+        if not unavailable
+        else "unavailable: " + ", ".join(unavailable) + "; install lectern[diarize]"
+    )
+    try:
+        model_status = "default models: " + ", ".join(
+            model.name
+            + (": present" if (DEFAULT_DIARIZE_MODELS / model.name).is_file() else ": missing")
+            for model in MODEL_FILES
+        )
+    except OSError:
+        model_status = "default models inaccessible"
+    print(f"diarize: OPTIONAL ({backend_status}; {model_status})")
     return 0 if ok else 1
 
 
@@ -153,8 +186,10 @@ def _ingest(args: Sequence[str]) -> int:
         print(
             "usage: lectern ingest SOURCE [--output DIR] [--state PATH] "
             "[--transcriber-command COMMAND] [--asr-model NAME] "
-            "[--allow-model-download] [--language CODE] [--term NAME] [--terms FILE] [--frames] "
-            "[--frame-interval SECONDS] [--max-frames N] [--json]",
+            "[--allow-model-download] [--language CODE] [--term NAME] [--terms FILE] "
+            "[--frames] "
+            "[--frame-interval SECONDS] [--max-frames N] [--diarize] "
+            "[--speakers N] [--diarize-models DIR] [--json]",
             file=sys.stderr,
         )
         return 2
@@ -172,6 +207,9 @@ def _ingest(args: Sequence[str]) -> int:
     frames = False
     frame_interval = DEFAULT_FRAME_INTERVAL
     max_frames = DEFAULT_MAX_FRAMES
+    diarize = False
+    speakers: int | None = None
+    diarize_models = DEFAULT_DIARIZE_MODELS
     rest = list(args[1:])
     index = 0
     while index < len(rest):
@@ -187,6 +225,20 @@ def _ingest(args: Sequence[str]) -> int:
             index += 2
         elif token == "--asr-model" and index + 1 < len(rest):
             asr_model = rest[index + 1]
+            index += 2
+        elif token == "--diarize":
+            diarize = True
+            index += 1
+        elif token == "--diarize-models" and index + 1 < len(rest):
+            diarize_models = Path(rest[index + 1])
+            index += 2
+        elif token == "--speakers" and index + 1 < len(rest):
+            try:
+                speakers = int(rest[index + 1])
+                validate_diarization_options(speakers)
+            except (ValueError, DiarizationError) as exc:
+                print(f"ingest: invalid {token}: {redact_paths(str(exc))}", file=sys.stderr)
+                return 2
             index += 2
         elif token == "--frames":
             frames = True
@@ -223,7 +275,8 @@ def _ingest(args: Sequence[str]) -> int:
                 "[--transcriber-command COMMAND] [--asr-model NAME] "
                 "[--allow-model-download] [--language CODE] [--term NAME] [--terms FILE] "
                 "[--frames] "
-                "[--frame-interval SECONDS] [--max-frames N] [--json]",
+                "[--frame-interval SECONDS] [--max-frames N] [--diarize] "
+                "[--speakers N] [--diarize-models DIR] [--json]",
                 file=sys.stderr,
             )
             return 2
@@ -247,15 +300,18 @@ def _ingest(args: Sequence[str]) -> int:
                 frames=frames,
                 frame_interval=frame_interval,
                 max_frames=max_frames,
+                diarize=diarize,
+                speakers=speakers,
+                diarize_models=diarize_models,
             )
     except IngestError as exc:
-        print(f"ingest: {exc}", file=sys.stderr)
+        print(f"ingest: {redact_paths(str(exc))}", file=sys.stderr)
         return 1
     except AutomationError as exc:
-        print(f"ingest: {exc}", file=sys.stderr)
+        print(f"ingest: {redact_paths(str(exc))}", file=sys.stderr)
         return 3
     except OSError as exc:
-        print(f"ingest: {exc}", file=sys.stderr)
+        print(f"ingest: {redact_paths(str(exc))}", file=sys.stderr)
         return 1
 
     if json_output:
@@ -484,13 +540,13 @@ def _queue(args: Sequence[str]) -> int:
         if command == "ingest":
             return _queue_ingest(rest, state_path, json_output)
     except AutomationError as exc:
-        print(f"queue: {exc}", file=sys.stderr)
+        print(f"queue: {redact_paths(str(exc))}", file=sys.stderr)
         return 3
     except IngestError as exc:
-        print(f"queue: {exc}", file=sys.stderr)
+        print(f"queue: {redact_paths(str(exc))}", file=sys.stderr)
         return 1
     except OSError as exc:
-        print(f"queue: {exc}", file=sys.stderr)
+        print(f"queue: {redact_paths(str(exc))}", file=sys.stderr)
         return 1
     _queue_usage()
     return 2
@@ -571,6 +627,9 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
     frames = False
     frame_interval = DEFAULT_FRAME_INTERVAL
     max_frames = DEFAULT_MAX_FRAMES
+    diarize = False
+    speakers: int | None = None
+    diarize_models = DEFAULT_DIARIZE_MODELS
     rest = list(args[1:])
     index = 0
     while index < len(rest):
@@ -583,6 +642,20 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
             index += 2
         elif token == "--asr-model" and index + 1 < len(rest):
             asr_model = rest[index + 1]
+            index += 2
+        elif token == "--diarize":
+            diarize = True
+            index += 1
+        elif token == "--diarize-models" and index + 1 < len(rest):
+            diarize_models = Path(rest[index + 1])
+            index += 2
+        elif token == "--speakers" and index + 1 < len(rest):
+            try:
+                speakers = int(rest[index + 1])
+                validate_diarization_options(speakers)
+            except (ValueError, DiarizationError) as exc:
+                print(f"ingest: invalid {token}: {redact_paths(str(exc))}", file=sys.stderr)
+                return 2
             index += 2
         elif token == "--frames":
             frames = True
@@ -630,6 +703,9 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
             frames=frames,
             frame_interval=frame_interval,
             max_frames=max_frames,
+            diarize=diarize,
+            speakers=speakers,
+            diarize_models=diarize_models,
         )
     if json_output:
         _print_json(
@@ -768,10 +844,15 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
     if evidence is not None:
         with suppress(ValueError, OSError):
             metadata = read_transcript_metadata(Path(bundle.bundle_path), manifest, evidence.source)
+    try:
+        speakers_document = read_diarization(Path(bundle.bundle_path), manifest)
+    except (ValueError, OSError):
+        speakers_document = None
     segments = None if evidence is None else evidence.segments.root
     layers = {
         "transcript": manifest.stages[StageName.TRANSCRIBE].state is StageState.DONE,
         "visual": manifest.stages[StageName.VISUAL].state is StageState.DONE,
+        "speakers": speakers_document is not None,
     }
     title = redact_paths(manifest.source.title or "Untitled talk")
     payload = {
@@ -796,6 +877,8 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
         "segment_count": None if segments is None else len(segments),
         "word_count": None if segments is None else sum(len(s.text.split()) for s in segments),
         "frame_count": frame_count,
+        "speaker_count": None if speakers_document is None else speakers_document.speaker_count,
+        "count_source": None if speakers_document is None else speakers_document.count_source,
         "layers": layers,
         "bundle_dir": redact_paths(bundle.bundle_path),
     }
@@ -807,6 +890,11 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
             f"{_plain_search_field(redact_paths(value))}\n"
             for key, value in source_details(manifest.source).items()
             if value is not None
+        )
+        speaker_description = (
+            "no"
+            if speakers_document is None
+            else f"yes ({speakers_document.speaker_count}, {speakers_document.count_source})"
         )
         visual_description = "no"
         if layers["visual"]:
@@ -836,6 +924,7 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
             f"Words: {payload['word_count'] if segments is not None else 'unknown'}\n"
             f"Transcript: {'yes' if layers['transcript'] else 'no'}\n"
             f"Visual: {visual_description}\n"
+            f"Speakers: {speaker_description}\n"
             f"Bundle directory: {payload['bundle_dir']}"
         )
     return 0
@@ -857,7 +946,11 @@ def _transcript(args: Sequence[str]) -> int:
     try:
         with open_state(state_path) as state:
             evidence = state.get_library_evidence(bundle_id, require_ready=True)
-    except AutomationError as exc:
+            bundle = state.get_library_bundle(bundle_id)
+            speakers_document = read_diarization(
+                Path(bundle.bundle_path), state.get_library_manifest(bundle_id)
+            )
+    except (AutomationError, ValueError) as exc:
         print(f"transcript: {redact_paths(str(exc))}", file=sys.stderr)
         return 3
     except OSError as exc:
@@ -865,6 +958,11 @@ def _transcript(args: Sequence[str]) -> int:
         return 1
     title = redact_paths(evidence.source.source.title or "Untitled talk")
     segments = evidence.segments.root
+    speakers_by_segment = (
+        {}
+        if speakers_document is None
+        else {s.segment_id: s.speaker for s in speakers_document.segment_speakers}
+    )
     if output_format == "json":
         _print_json(
             {
@@ -876,6 +974,11 @@ def _transcript(args: Sequence[str]) -> int:
                         "start_s": s.start_s,
                         "end_s": s.end_s,
                         "text": redact_paths(s.text),
+                        **(
+                            {"speaker": speakers_by_segment.get(s.id)}
+                            if speakers_document is not None
+                            else {}
+                        ),
                     }
                     for s in segments
                 ],
@@ -886,7 +989,9 @@ def _transcript(args: Sequence[str]) -> int:
             print(f"# {_plain_search_field(title)}\n")
         print(
             "\n\n".join(
-                f"[{format_time(s.start_s)}] (#{s.id}) {_plain_search_field(redact_paths(s.text))}"
+                f"[{format_time(s.start_s)}] (#{s.id}) "
+                f"{label + ': ' if (label := speakers_by_segment.get(s.id)) else ''}"
+                f"{_plain_search_field(redact_paths(s.text))}"
                 for s in segments
             )
         )
@@ -1067,7 +1172,8 @@ def _queue_usage() -> None:
         "ingest ITEM [--output DIR] [--transcriber-command COMMAND] "
         "[--asr-model NAME] [--allow-model-download] [--language CODE] "
         "[--term NAME] [--terms FILE] "
-        "[--frames] [--frame-interval SECONDS] [--max-frames N]} "
+        "[--frames] [--frame-interval SECONDS] [--max-frames N] "
+        "[--diarize] [--speakers N] [--diarize-models DIR]} "
         "[--state PATH] [--json]",
         file=sys.stderr,
     )

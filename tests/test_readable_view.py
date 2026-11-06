@@ -89,7 +89,7 @@ def test_library_show_exposes_readable_facts_and_preserves_json(
     assert payload["transcript_method"] == "local_command_json"
     assert payload["segment_count"] == 3
     assert payload["word_count"] == 14
-    assert payload["layers"] == {"transcript": True, "visual": False}
+    assert payload["layers"] == {"transcript": True, "visual": False, "speakers": False}
     assert payload["bundle_dir"] == "<path>"
     assert str(state_path.parent) not in output
     assert cli.main(["library", "list", "--state", str(state_path)]) == 0

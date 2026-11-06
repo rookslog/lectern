@@ -9,6 +9,22 @@ versioned release notes will become stricter once preview support stabilizes.
   following #64's pass-through/no-quality-claim boundary: faster-whisper
   `hotwords`, command `LECTERN_TERMS`, exact term provenance and bundle identity,
   explicit sidecar non-application, and library/packet inspection.
+- Fixed export, transcript, and library inspection of bundles without the
+  optional diarization stage, preserving ordinary unlabelled transcript reads.
+
+- Added opt-in local speaker diarization via `lectern[diarize]` for one-shot and
+  queued ingest: Silero VAD v6 via sherpa-onnx, WeSpeaker ResNet34-LM via
+  ONNX Runtime with Kaldi filterbanks and mean normalization, and the vendored
+  Apache-2.0 `diarize` 0.1.2 counting/clustering/smoothing pipeline, without
+  PyTorch. Automatic counting is the default; `--speakers N` overrides it.
+  Silero and WeSpeaker models are user-fetched only with
+  explicit model-download permission and verified before atomic publication.
+  Method, model digests and speaker count bind bundle identity; the additive `1.1.0` artifact
+  `transcript/diarization.json` declares anonymous turns and segment assignments.
+  Packets, transcript views and library inspection show labels and their limits;
+  doctor reports the optional backend and default models without affecting its
+  exit code. Unrequested diarization is explicitly skipped.
+
 - Preserve 5.1 AC3 normalization by accepting bounded, authentic FFmpeg
   side-data diagnostics from an already observed analysis filter. Exact tagged
   frame parsing, continuity checks, and the aggregate padding budget are unchanged.

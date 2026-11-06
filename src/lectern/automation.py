@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from lectern.bundle import MANIFEST_NAME, Manifest, atomic_write_text
+from lectern.diarization import DEFAULT_DIARIZE_MODELS
 from lectern.ingest import (
     BundleExistsError,
     IngestError,
@@ -317,6 +318,9 @@ class AutomationState(AutomationStateStore):
         frames: bool = False,
         frame_interval: float = DEFAULT_FRAME_INTERVAL,
         max_frames: int = DEFAULT_MAX_FRAMES,
+        diarize: bool = False,
+        speakers: int | None = None,
+        diarize_models: Path = DEFAULT_DIARIZE_MODELS,
     ) -> IngestResult:
         queue_item = self.get_queue_item(queue_item_id)
         if queue_item.state is not QueueState.APPROVED:
@@ -342,6 +346,9 @@ class AutomationState(AutomationStateStore):
                         frames=frames,
                         frame_interval=frame_interval,
                         max_frames=max_frames,
+                        diarize=diarize,
+                        speakers=speakers,
+                        diarize_models=diarize_models,
                         source_root=root,
                         expected_approval_sha256=queue_item.content_sha256,
                     )
@@ -460,6 +467,9 @@ class AutomationState(AutomationStateStore):
         frames: bool = False,
         frame_interval: float = DEFAULT_FRAME_INTERVAL,
         max_frames: int = DEFAULT_MAX_FRAMES,
+        diarize: bool = False,
+        speakers: int | None = None,
+        diarize_models: Path = DEFAULT_DIARIZE_MODELS,
     ) -> IngestResult:
         with prepare_local_ingest(
             source_path,
@@ -471,6 +481,9 @@ class AutomationState(AutomationStateStore):
             frames=frames,
             frame_interval=frame_interval,
             max_frames=max_frames,
+            diarize=diarize,
+            speakers=speakers,
+            diarize_models=diarize_models,
             expected_approval_sha256=None,
         ) as prepared:
             planned_bundle_id = prepared.planned_bundle_id()
