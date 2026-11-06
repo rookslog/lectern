@@ -646,6 +646,7 @@ class AutomationState(AutomationStateStore):
         }
         pending_path = result.bundle_dir / PENDING_PROVENANCE_NAME
         pending_original = pending_path.read_bytes() if pending_path.exists() else None
+        pending_mode = pending_path.stat().st_mode & 0o777 if pending_original is not None else None
         try:
             attach_provenance_to_bundle(
                 result.bundle_dir,
@@ -685,7 +686,9 @@ class AutomationState(AutomationStateStore):
                 or not pending_path.exists()
                 or pending_path.read_bytes() != pending_original
             ):
-                atomic_write_text(pending_path, pending_original.decode("utf-8"))
+                atomic_write_text(
+                    pending_path, pending_original.decode("utf-8"), permission_ceiling=pending_mode
+                )
             if isinstance(exc, AutomationError):
                 raise
             raise AutomationError(

@@ -130,7 +130,7 @@ def attach_provenance_to_bundle(
     encoded = text.encode("utf-8")
     # Retain exact target bytes BEFORE declaring them. Recovery does not depend
     # on today's schema number, source name, or provenance key placement.
-    atomic_write_text(pending_path, text)
+    atomic_write_text(pending_path, text, permission_ceiling=source_path.stat().st_mode & 0o600)
     acquire = manifest.stages[StageName.ACQUIRE]
     acquire.outputs = [
         ArtifactRef(
