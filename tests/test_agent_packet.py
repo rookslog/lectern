@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shlex
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -11,7 +14,7 @@ import pytest
 
 from lectern import cli
 from lectern import state as state_module
-from lectern.agent_packet import packet_markdown
+from lectern.agent_packet import check_citations, packet_markdown, talk_packet
 from lectern.automation import open_state
 from lectern.bundle import Manifest, StageName, StageState
 from lectern.ingest import IngestResult
@@ -38,6 +41,230 @@ def agent_bundle(tmp_path: Path) -> tuple[Path, IngestResult]:
             transcriber_command=f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}",
         )
     return state_path, result
+
+
+@pytest.mark.parametrize(
+    "bundle_id",
+    [
+        "synthetic-0123456789ab",
+        "migrated-safe",
+        "migrated with space",
+        "migrated#hash",
+        "migrated[brackets]",
+        "/Users/someone/private/talk",
+    ],
+)
+@pytest.mark.parametrize("start_s", [1.25, -3661.9, -0.1])
+def test_packet_citations_round_trip_registered_ids_and_signed_times(
+    agent_bundle: tuple[Path, IngestResult], tmp_path: Path, bundle_id: str, start_s: float
+) -> None:
+    state_path, result = agent_bundle
+    # Model a migrated identity in a real registered bundle, retaining strict evidence.
+    bundle_dir = tmp_path / "migrated-bundle"
+    shutil.copytree(result.bundle_dir, bundle_dir)
+    manifest = Manifest.load(bundle_dir)
+    manifest.bundle_id = bundle_id
+    transcript = bundle_dir / "transcript/segments.json"
+    segments = json.loads(transcript.read_text(encoding="utf-8"))
+    segments[0]["start_s"] = start_s
+    transcript.write_text(json.dumps(segments), encoding="utf-8")
+    payload = transcript.read_bytes()
+    for stage in manifest.stages.values():
+        for output in stage.outputs:
+            if output.path == "transcript/segments.json":
+                output.sha256 = hashlib.sha256(payload).hexdigest()
+                output.bytes = len(payload)
+    manifest.save(bundle_dir)
+    with sqlite3.connect(state_path) as connection:
+        connection.execute(
+            "UPDATE library_bundles SET bundle_id = ?, bundle_path = ? WHERE bundle_id = ?",
+            (bundle_id, str(bundle_dir), result.manifest.bundle_id),
+        )
+    with open_state(state_path) as state:
+        packet = talk_packet(state, bundle_id)
+        markdown = packet_markdown(packet)
+        assert "/Users/someone/private/talk" not in json.dumps(packet)
+        assert "/Users/someone/private/talk" not in markdown
+        json_tokens = [segment["anchor"]["cite"] for segment in packet["segments"]]
+        # Exclude the unchanged instructional placeholder, which is not a citation.
+        markdown_tokens = re.findall(r"\[t=-?[0-9][^\r\n]*?\]", markdown)
+        assert len(markdown_tokens) == len(json_tokens) == 3
+        for tokens in (json_tokens, markdown_tokens):
+            report = check_citations(state, "\n\n".join(tokens))
+            assert [item["status"] for item in report["citations"]] == ["ok"] * 3
+        if start_s == -3661.9:
+            wrong = json_tokens[0].replace("t=-1:01:01", "t=1:01:01", 1)
+            correction = check_citations(state, wrong)["citations"][0]
+            assert correction["status"] == "time_mismatch"
+            assert correction["expected_time"] == "-1:01:01"
+            assert correction["corrected_token"] == json_tokens[0]
+        cite_id = (
+            "0123456789ab"
+            if bundle_id == "synthetic-0123456789ab"
+            else bundle_id
+            if bundle_id == "migrated-safe"
+            else hashlib.sha256(bundle_id.encode("utf-8")).hexdigest()[:12]
+        )
+        assert all(f" {cite_id}#" in token for token in json_tokens)
+
+
+@pytest.mark.parametrize(
+    ("component", "length"),
+    [
+        ("hours", 5000),
+        ("segment", 5000),
+        ("frame", 5000),
+        ("hours", 7),
+        ("segment", 10),
+        ("frame", 10),
+    ],
+)
+def test_checker_rejects_unbounded_numeric_components_without_aborting(
+    agent_bundle: tuple[Path, IngestResult],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    component: str,
+    length: int,
+) -> None:
+    state_path, result = agent_bundle
+    digits = "9" * length
+    time = f"{digits}:00:00" if component == "hours" else "00:00"
+    index = "0" if component == "hours" else f"{'f' if component == 'frame' else ''}{digits}"
+    token = f"[t={time} {result.manifest.bundle_id}#{index}]"
+    review = tmp_path / "review.md"
+    review.write_text(token, encoding="utf-8")
+    args = ["check-citations", str(review), "--state", str(state_path)]
+    assert cli.main([*args, "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    report = json.loads(captured.out)
+    assert report["citations"][0]["status"] == "malformed"
+    assert report["problems"] == 1
+    assert cli.main(args) == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert f"{token}: malformed\n" in captured.out
+
+
+def test_digest_and_ingest_suffix_collisions_are_ambiguous(
+    agent_bundle: tuple[Path, IngestResult], tmp_path: Path
+) -> None:
+    state_path, result = agent_bundle
+    digest = hashlib.sha256(result.manifest.bundle_id.encode("utf-8")).hexdigest()[:12]
+    with open_state(state_path) as state:
+        report = check_citations(state, f"[t=00:00 {digest}#0]")
+        assert report["citations"][0]["status"] == "ok"
+    # An unavailable candidate still participates in identity ambiguity.
+    with sqlite3.connect(state_path) as connection:
+        connection.execute(
+            """INSERT INTO library_bundles
+               SELECT ?, ?, source_id, source_item_id, queue_item_id, created_at, kind
+               FROM library_bundles WHERE bundle_id = ?""",
+            (f"other-{digest}", str(tmp_path / "unavailable"), result.manifest.bundle_id),
+        )
+    with open_state(state_path) as state:
+        report = check_citations(state, f"[t=00:00 {digest}#0]")
+        assert report["citations"][0]["status"] == "ambiguous_bundle"
+        assert report["citations"][0]["corrected_token"] is None
+
+
+def test_checker_accepts_numeric_components_at_the_regex_limits(
+    agent_bundle: tuple[Path, IngestResult],
+) -> None:
+    state_path, result = agent_bundle
+    bundle_id = result.manifest.bundle_id
+    text = (
+        f"[t=999999:00:00 {bundle_id}#0]\n\n"
+        f"[t=00:00 {bundle_id}#999999999]\n\n"
+        f"[t=00:00 {bundle_id}#f999999999]"
+    )
+    with open_state(state_path) as state:
+        report = check_citations(state, text)
+    assert [entry["status"] for entry in report["citations"]] == [
+        "time_mismatch",
+        "unknown_segment",
+        "unknown_frame",
+    ]
+
+
+def test_uncited_paragraph_locations_excerpts_and_plain_output(
+    agent_bundle: tuple[Path, IngestResult],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_path, result = agent_bundle
+    review = tmp_path / "review.md"
+    review.write_text(
+        "\n\n# Review\n\nSetext heading\n---\n\n-\n\n1.\n\n"
+        f"Cited [t=00:00 {result.manifest.bundle_id}#0].\n\n"
+        "An unsupported claim.\x1b\t\nA continuation line.\n\n\n"
+        'Read "/Users/someone/private/talk".\x85\nA second continuation.\n',
+        encoding="utf-8",
+    )
+    args = ["check-citations", str(review), "--state", str(state_path)]
+    assert cli.main([*args, "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["uncited"] == [
+        {"line": 14, "excerpt": "An unsupported claim.\\u001b\\u0009"},
+        {"line": 18, "excerpt": 'Read "<path>".\\u0085'},
+    ]
+    assert report["uncited_paragraphs"] == len(report["uncited"]) == 2
+    assert cli.main(args) == 0
+    assert capsys.readouterr().out == (
+        "uncited paragraph at line 14: An unsupported claim.\\u001b\\u0009\n"
+        'uncited paragraph at line 18: Read "<path>".\\u0085\n'
+        "citations: 1 ok, 0 problems; uncited paragraphs: 2\n"
+    )
+
+
+def test_uncited_positions_are_not_researched_and_excerpts_use_first_sixty_characters(
+    agent_bundle: tuple[Path, IngestResult],
+) -> None:
+    state_path, _ = agent_bundle
+    text = "  " + "x" * 80 + "\n\n \n" + "  " + "x" * 80
+    with open_state(state_path) as state:
+        report = check_citations(state, text)
+    assert report["uncited"] == [
+        {"line": 1, "excerpt": "  " + "x" * 58},
+        {"line": 4, "excerpt": "  " + "x" * 58},
+    ]
+    assert report["uncited_paragraphs"] == 2
+
+
+def test_mismatched_time_offers_pasteable_corrected_token_without_changing_summary(
+    agent_bundle: tuple[Path, IngestResult],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_path, result = agent_bundle
+    short_id = result.manifest.bundle_id.rsplit("-", 1)[1]
+    wrong = f"[t=-00:02 {short_id}#0001]"
+    corrected = f"[t=00:01 {short_id}#0001]"
+    review = tmp_path / "review.md"
+    review.write_text(
+        f"{wrong}\n\n[t=00:00 {short_id}#0]\n\n[t=00:00 {short_id}#99]\n\n[t=bad]",
+        encoding="utf-8",
+    )
+    args = ["check-citations", str(review), "--state", str(state_path)]
+    assert cli.main([*args, "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert [entry["corrected_token"] for entry in report["citations"]] == [
+        corrected,
+        None,
+        None,
+        None,
+    ]
+    assert report["citations"][0]["expected_time"] == "00:01"
+    assert cli.main(args) == 1
+    assert capsys.readouterr().out == (
+        f"{wrong}: time_mismatch (expected 00:01; use {corrected})\n"
+        f"[t=00:00 {short_id}#99]: unknown_segment\n"
+        "[t=bad]: malformed\n"
+        "citations: 1 ok, 3 problems; uncited paragraphs: 0\n"
+    )
+    review.write_text(corrected, encoding="utf-8")
+    assert cli.main(args) == 0
+    assert capsys.readouterr().out == "citations: 1 ok, 0 problems; uncited paragraphs: 0\n"
 
 
 def test_json_packet_preserves_existing_anchors_and_reports_layers(
@@ -184,7 +411,7 @@ def test_citation_checker_counts_problems_and_uncited_paragraphs(
     assert report["uncited_paragraphs"] == 1
     assert cli.main(args) == 1
     output = capsys.readouterr().out
-    assert len(output.splitlines()) == 6
+    assert len(output.splitlines()) == 7
     assert output.endswith("citations: 2 ok, 5 problems; uncited paragraphs: 1\n")
     review.write_text(
         content.replace(f"00:02 {bundle_id}#1", f"00:01 {bundle_id}#1")
@@ -195,7 +422,10 @@ def test_citation_checker_counts_problems_and_uncited_paragraphs(
         encoding="utf-8",
     )
     assert cli.main(args) == 0
-    assert capsys.readouterr().out == "citations: 7 ok, 0 problems; uncited paragraphs: 1\n"
+    assert capsys.readouterr().out == (
+        "uncited paragraph at line 21: An unsupported claim.\n"
+        "citations: 7 ok, 0 problems; uncited paragraphs: 1\n"
+    )
     review.write_text(
         "Unknown [t=00:00 missing-bundle#0].\n\nUnknown suffix [t=00:00 ffffffffffff#0].",
         encoding="utf-8",

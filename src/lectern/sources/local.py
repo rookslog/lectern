@@ -212,6 +212,17 @@ def caption_sidecar_language(media: Path, sidecar: Path) -> str | None:
     return match.group(1) if match is not None else None
 
 
+def caption_sidecar_approval_metadata(media: Path, sidecar: Path | None) -> tuple[str, str] | None:
+    """Bind derived tagged-caption facts, preserving approvals for untagged names."""
+
+    if sidecar is None:
+        return None
+    language = caption_sidecar_language(media, sidecar)
+    if language is None:
+        return None
+    return language, f"caption_sidecar_{sidecar.suffix[1:]}"
+
+
 def info_sidecar_path(path: Path, *, root: Path | None = None) -> Path | None:
     """Select adjacent metadata under the same boundary as transcript sidecars."""
 
@@ -231,7 +242,15 @@ def approval_digest_and_media_size(
     sidecar_digest = digest_and_size(sidecar)[0] if sidecar is not None else None
     info = info_sidecar_path(path, root=root)
     info_digest = digest_and_size(info)[0] if info is not None else None
-    return approval_digest(media_digest, sidecar_digest, info_digest), media_size
+    return (
+        approval_digest(
+            media_digest,
+            sidecar_digest,
+            info_digest,
+            caption_metadata=caption_sidecar_approval_metadata(path, sidecar),
+        ),
+        media_size,
+    )
 
 
 class LocalFolderAdapter:
