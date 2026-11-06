@@ -5,6 +5,10 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Added experimental S5 listening marks: idempotent UTF-8 import and listing,
+  exact/nearby transcript binding, and marks in JSON/Markdown agent packets.
+  Marks stay in local state, not bundle evidence; following the retrieval-index
+  migration pattern, automation state advances from schema 3 to 4.
 - Fixed timed-caption/local-ASR follow-ups (#89): preserve ordinary repeated
   VTT cues while de-duplicating rolling captions; bind derived language/method
   to language-tagged caption approvals; preserve Hub model IDs while redacting

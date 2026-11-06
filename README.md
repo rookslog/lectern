@@ -258,6 +258,32 @@ past an hour. JSON includes `bundle_id`, `title`, and segments with `id`, `start
 
 Use `--json` on source, queue, and library commands for machine-readable output.
 
+### Marks (experimental)
+
+Jot one listening mark per line in a UTF-8 file:
+`[H:]MM:SS[.fff] [KIND] TEXT`. Optional kinds are `?` (question), `!`
+(important), and `->` or `→` (follow up); only a kind-bearing line may omit
+text. Blank lines and lines starting with `#` are ignored. BOM and CRLF files
+are accepted.
+
+```bash
+uv run lectern marks import <bundle-id> notes.txt --state PATH
+uv run lectern marks list <bundle-id> --state PATH --json
+```
+
+Both commands take an exact registered bundle ID and require a ready bundle.
+A mark binds to the segment covering its time (`start_s <= t < end_s`), or
+to the nearest preceding segment ending within five seconds; otherwise it
+stays unbound. Re-imports skip duplicate marks. Malformed lines are reported
+with line numbers while valid lines are imported (exit 1 if any are malformed).
+Omit `--json` for readable listing; it is also available on import.
+
+Marks live in local state, not in bundle evidence, and appear in agent packets.
+Packet `t` and stored `t_s` retain the gesture time; a bound row's citation uses
+the segment start so it passes the existing citation checker. Unbound rows
+show the gesture time without a cite token. Lectern records the time-bound
+gesture, not answers or semantic connections.
+
 ### For agents: packets and citation checks
 
 `lectern export BUNDLE_ID` exports a ready talk's source facts, layer availability
