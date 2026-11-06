@@ -5,6 +5,9 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Fixed export, transcript, and library inspection of bundles without the
+  optional diarization stage, preserving ordinary unlabelled transcript reads.
+
 - Added opt-in local speaker diarization via `lectern[diarize]` for one-shot and
   queued ingest: Silero VAD v6 via sherpa-onnx, WeSpeaker ResNet34-LM via
   ONNX Runtime with Kaldi filterbanks and mean normalization, and the vendored

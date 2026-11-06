@@ -117,7 +117,9 @@ def read_frames(bundle: Path, manifest: Manifest) -> FramesDocument | None:
 def read_diarization(bundle: Path, manifest: Manifest) -> DiarizationDocument | None:
     """Read speaker evidence only when its done stage declares the exact artifact."""
 
-    stage = manifest.stages[StageName.DIARIZE]
+    stage = manifest.stages.get(StageName.DIARIZE)
+    if stage is None:
+        return None
     path = "transcript/diarization.json"
     if stage.state is not StageState.DONE or not any(
         output.path == path for output in stage.outputs

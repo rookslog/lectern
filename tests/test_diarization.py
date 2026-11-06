@@ -159,6 +159,50 @@ def test_unrequested_diarization_preserves_unlabelled_ingest(
     assert all("speaker" not in s for s in packet["segments"])
 
 
+@pytest.mark.parametrize("command", ["export", "transcript", "library"])
+def test_readers_preserve_ready_bundle_without_optional_diarize_stage(
+    command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _ingest(_input(tmp_path), tmp_path) == 0
+    result = json.loads(capsys.readouterr().out)
+    bundle, bundle_id = Path(result["bundle_dir"]), result["bundle_id"]
+    manifest = Manifest.load(bundle)
+    del manifest.stages[StageName.DIARIZE]
+    manifest.save(bundle)
+    assert StageName.DIARIZE not in Manifest.load(bundle).stages
+    with open_state(tmp_path / "state.db") as state:
+        assert state.get_library_bundle(bundle_id).status.value == "ready"
+
+    args = [command, "show", bundle_id, "--json"] if command == "library" else [command, bundle_id]
+    assert cli.main([*args, "--state", str(tmp_path / "state.db")]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    if command == "transcript":
+        assert "[00:00] (#0) A proposed map." in captured.out
+        assert "[00:01] (#1) A second perspective." in captured.out
+        assert "[00:02] (#2) A closing thought." in captured.out
+        assert "S1:" not in captured.out
+        assert cli.main([*args, "--format", "json", "--state", str(tmp_path / "state.db")]) == 0
+        payload = json.loads(capsys.readouterr().out)
+    else:
+        payload = json.loads(captured.out)
+    if command == "library":
+        assert payload["status"] == "ready"
+        assert payload["layers"]["transcript"] is True
+        assert payload["layers"]["speakers"] is False
+        assert payload["speaker_count"] is None
+        assert payload["segment_count"] == 3
+    else:
+        assert [s["text"] for s in payload["segments"]] == [
+            "A proposed map.",
+            "A second perspective.",
+            "A closing thought.",
+        ]
+        assert all("speaker" not in s for s in payload["segments"])
+        if command == "export":
+            assert payload["layers"]["speakers"] == {"present": False, "reason": "not recorded"}
+
+
 def test_missing_local_models_fail_cleanly_without_paths(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

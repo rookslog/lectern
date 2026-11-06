@@ -18,6 +18,7 @@ would fail the run in a way that has nothing to do with what any test does.
 
 from __future__ import annotations
 
+import importlib
 import socket
 from collections.abc import Iterator
 from typing import Any, cast
@@ -54,6 +55,10 @@ def deny_network_by_default(
     if may_use_network(request):
         yield
         return
+
+    # SSL subclasses socket.socket at import time. Initialize it while the
+    # constructor is still a class so later guarded imports remain usable.
+    importlib.import_module("ssl")
 
     def refuse(*args: Any, **kwargs: Any) -> socket.socket:
         raise NetworkAccessDenied(
