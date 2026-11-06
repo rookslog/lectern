@@ -75,7 +75,7 @@ def whisper_calls(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
 
     monkeypatch.setattr(module, "WhisperModel", FakeWhisperModel, raising=False)
     monkeypatch.setitem(sys.modules, "faster_whisper", module)
-    monkeypatch.setattr(asr, "_pcm16_mono_samples", samples)
+    monkeypatch.setattr(asr, "pcm16_mono_samples", samples)
     monkeypatch.setattr(asr, "version", library_version)
     monkeypatch.setattr(asr, "create_asr_backend", asr.FasterWhisperBackend)
     return calls

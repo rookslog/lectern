@@ -47,6 +47,14 @@ The current `0.1.0` to `1.0.0` bundle procedure is documented in
 [docs/MIGRATIONS.md](docs/MIGRATIONS.md). Manifest `1.0.0` does not mean the
 Lectern package has reached `1.0.0`; that legacy migration target stays unchanged.
 
+Named-term hints extend the local `transcript/metadata.json` artifact, not the
+manifest wire format. Its `lectern.transcript.metadata.v0` tag remains unchanged,
+and it records `schema_contract.manifest_schema_versioned: false`. Hints-bearing
+metadata requires an updated reader; strict older artifact readers may reject
+the added `terms` and `terms_applied` backend fields. With no terms, those fields
+remain omitted and transcript identity and backend provenance bytes are unchanged.
+This preview behavior is not a stable API or a forward-compatibility promise.
+
 The pre-release `1.0.0` contract requires nonblank transcript segment text:
 at least one character must fall outside Python's Unicode whitespace set.
 This requirement was tightened in place while establishing that contract.
