@@ -93,7 +93,7 @@ def schema_version_is_compatible(version: str) -> bool:
     return version in {"1.0.0", SCHEMA_VERSION}
 
 
-def atomic_write_text(path: Path, text: str) -> Path:
+def atomic_write_text(path: Path, text: str, *, permission_ceiling: int | None = None) -> Path:
     """Publish ``text`` at ``path`` via a same-directory temporary file.
 
     A plain write truncates the destination before the new bytes land, so a
@@ -102,6 +102,10 @@ def atomic_write_text(path: Path, text: str) -> Path:
     ``os.replace`` makes the swap atomic: readers see either the previous file
     or the new one, never a partial one. The temporary is removed if anything
     fails before the replace.
+
+    ``permission_ceiling`` intersects the new or preserved POSIX permission
+    bits before any content is written. ``None`` retains the ordinary creation
+    mode and existing-destination behavior.
     """
 
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -110,6 +114,8 @@ def atomic_write_text(path: Path, text: str) -> Path:
     # must never transit through a umask-mode file another local user could
     # read, and a killed process must not leave a broad-mode copy behind.
     mode = path.stat().st_mode & 0o777 if path.exists() else None
+    if permission_ceiling is not None:
+        mode = (mode if mode is not None else 0o666) & permission_ceiling & 0o777
     descriptor = os.open(
         temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode if mode is not None else 0o666
     )
