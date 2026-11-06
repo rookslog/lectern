@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import socket
 import sqlite3
 import stat
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -2170,7 +2172,14 @@ def test_replay_admission_recovers_interrupted_provenance_repair(
                 patch.setattr(Manifest, "save", crash)
             else:
                 # The manifest is declared first; die before source.json is published.
-                patch.setattr(provenance_module, "atomic_write_text", crash)
+                real_write = provenance_module.atomic_write_text
+
+                def interrupt_source(path: Path, text: str) -> Path:
+                    if path.name == "source.json":
+                        crash()
+                    return real_write(path, text)
+
+                patch.setattr(provenance_module, "atomic_write_text", interrupt_source)
             with pytest.raises(SystemExit, match="synthetic repair interruption"):
                 _run_admission_case(state, media, output, one_shot=one_shot, command=None)
         interrupted = _bundle_tree(first.bundle_dir)
@@ -2221,8 +2230,9 @@ def test_replay_admission_refuses_edited_core_with_fresh_provenance(
 
 @pytest.mark.parametrize("one_shot", [False, True], ids=["queue", "one-shot"])
 @pytest.mark.parametrize("rejection", ["noop", "exception"])
+@pytest.mark.parametrize("receipt", [False, True], ids=["no-receipt", "receipt"])
 def test_rejected_replay_repair_preserves_latest_missing_bundle_id(
-    tmp_path: Path, monkeypatch: MonkeyPatch, one_shot: bool, rejection: str
+    tmp_path: Path, monkeypatch: MonkeyPatch, one_shot: bool, rejection: str, receipt: bool
 ) -> None:
     """Rejecting retained A must not replace the queue's missing latest bundle B."""
     media = copy_fixture(tmp_path / "source")
@@ -2240,7 +2250,10 @@ def test_rejected_replay_repair_preserves_latest_missing_bundle_id(
         completed = state.list_queue()[0]
         assert completed.bundle_id == second.manifest.bundle_id
         source_path = first.bundle_dir / "source.json"
+        target = source_path.read_bytes()
         _strip_provenance(source_path)
+        if receipt:
+            (first.bundle_dir / ".lectern-provenance.pending.json").write_bytes(target)
         repairable = _bundle_tree(first.bundle_dir)
         segments_path = first.bundle_dir / "transcript/segments.json"
         segments_path.write_text("[]")
@@ -2302,24 +2315,38 @@ def test_replay_admission_after_completion_commit_crash(
     real_attach = automation.attach_provenance_to_bundle
     real_save = Manifest.save
     with open_state(tmp_path / "state.sqlite") as state:
-        if window == "before-source":
-            monkeypatch.setattr(automation, "attach_provenance_to_bundle", crash)
-        else:
 
-            def crash_after_source(*args: Any, **kwargs: Any) -> None:
-                with monkeypatch.context() as patch:
+        def interrupted_attach(*args: Any, **kwargs: Any) -> None:
+            with monkeypatch.context() as patch:
+                if window == "before-declaration":
                     patch.setattr(Manifest, "save", crash)
-                    real_attach(*args, **kwargs)
+                else:
+                    real_write = provenance_module.atomic_write_text
 
-            monkeypatch.setattr(automation, "attach_provenance_to_bundle", crash_after_source)
+                    def interrupt_source(path: Path, text: str) -> Path:
+                        if path.name == "source.json":
+                            crash()
+                        return real_write(path, text)
+
+                    patch.setattr(provenance_module, "atomic_write_text", interrupt_source)
+                real_attach(*args, **kwargs)
+
+        monkeypatch.setattr(automation, "attach_provenance_to_bundle", interrupted_attach)
         with pytest.raises(SimulatedCrash):
             _run_admission_case(state, media, output, one_shot=one_shot, command=command)
         completed = state.list_queue()[0]
         assert completed.state is QueueState.COMPLETED
         library = state.get_library_bundle(completed.bundle_id or "missing")
         bundle = Path(library.bundle_path)
-        assert ("provenance" in json.loads((bundle / "source.json").read_text())) == (
-            window == "before-manifest"
+        source_bytes = (bundle / "source.json").read_bytes()
+        assert "provenance" not in json.loads(source_bytes)
+        ref = next(
+            ref
+            for ref in Manifest.load(bundle).stages[StageName.ACQUIRE].outputs
+            if ref.path == "source.json"
+        )
+        assert (ref.sha256 == hashlib.sha256(source_bytes).hexdigest()) == (
+            window == "before-declaration"
         )
         monkeypatch.setattr(automation, "attach_provenance_to_bundle", real_attach)
         monkeypatch.setattr(Manifest, "save", real_save)
@@ -2783,3 +2810,362 @@ def test_prior_registration_restoration_requires_all_ownership_fields(
         )  # pyright: ignore[reportPrivateUsage]
         actual = state._restorable_queue_bundle_id(queue, previous)  # pyright: ignore[reportPrivateUsage]
         assert actual == (result.manifest.bundle_id if ownership == "valid" else None)
+
+
+_PENDING_PROVENANCE = ".lectern-provenance.pending.json"
+
+
+def _partial_provenance(bundle: Path, *, first: bool = False) -> None:
+    path = bundle / "source.json"
+    payload = json.loads(path.read_bytes())
+    payload.pop("provenance", None)
+    partial = {"provenance": {"source_id": "legacy"}}
+    payload = {**partial, **payload} if first else {**payload, **partial}
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    _declare_current_payload(bundle, "source.json")
+
+
+@pytest.mark.parametrize("one_shot", [False, True], ids=["queue", "one-shot"])
+@pytest.mark.parametrize("command_replay", [False, True], ids=["planned", "command"])
+@pytest.mark.parametrize(
+    "window", ["before-receipt", "before-declaration", "after-declaration", "after-source"]
+)
+@pytest.mark.parametrize("key_first", [False, True], ids=["key-last", "key-first"])
+def test_pending_provenance_sigkill_recovery(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    one_shot: bool,
+    command_replay: bool,
+    window: str,
+    key_first: bool,
+) -> None:
+    """Dropping durable intent strands a killed repair after metadata changes."""
+    media = copy_fixture(tmp_path / "source")
+    output = tmp_path / "bundles"
+    script = _write_transcriber_script(
+        tmp_path / "transcriber.py", json.dumps({"text": "Synthetic recovery evidence."})
+    )
+    command = f"{sys.executable} {script}" if command_replay else None
+    state_path = tmp_path / "state.sqlite"
+    with open_state(state_path) as state:
+        first = _run_admission_case(state, media, output, one_shot=one_shot, command=command)
+        _partial_provenance(first.bundle_dir, first=key_first)
+        before = _bundle_tree(first.bundle_dir)
+    child = """
+import os, signal, socket, sys
+from pathlib import Path
+from lectern import provenance
+from lectern.automation import open_state
+from lectern.bundle import Manifest
+
+def deny(*args, **kwargs):
+    raise AssertionError("network forbidden")
+socket.socket = socket.create_connection = deny
+provenance.STATE_SCHEMA_VERSION = int(os.environ.get("LECTERN_TEST_SCHEMA", "3"))
+state_path, media, output, one_shot, window, command = sys.argv[1:]
+real_write = provenance.atomic_write_text
+real_unlink = Path.unlink
+
+def kill(*args, **kwargs):
+    os.kill(os.getpid(), signal.SIGKILL)
+
+def write(path, text):
+    if (window == "before-receipt" and path.name == ".lectern-provenance.pending.json"
+        or window == "after-declaration" and path.name == "source.json"):
+        kill()
+    return real_write(path, text)
+
+def unlink(path, *args, **kwargs):
+    if window == "after-source" and path.name == ".lectern-provenance.pending.json":
+        kill()
+    return real_unlink(path, *args, **kwargs)
+
+provenance.atomic_write_text = write
+Path.unlink = unlink
+if window == "before-declaration":
+    Manifest.save = kill
+with open_state(Path(state_path)) as state:
+    if one_shot == "yes":
+        state.ingest_one_shot(Path(media), Path(output), transcriber_command=command or None)
+    else:
+        queue = state.approve_queue_item(state.list_queue()[0].id)
+        state.ingest_queue_item(queue.id, Path(output), transcriber_command=command or None)
+raise AssertionError("kill boundary was not reached")
+"""
+    killed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            child,
+            str(state_path),
+            str(media),
+            str(output),
+            "yes" if one_shot else "no",
+            window,
+            command or "",
+        ],
+        capture_output=True,
+        timeout=20,
+    )
+    assert killed.returncode == -signal.SIGKILL, killed.stderr.decode()
+    interrupted = _bundle_tree(first.bundle_dir)
+    assert (interrupted[MANIFEST_NAME] == before[MANIFEST_NAME]) == (
+        window in {"before-receipt", "before-declaration"}
+    )
+    assert (interrupted["source.json"] == before["source.json"]) == (window != "after-source")
+    if window == "after-declaration":
+        with open_state(state_path) as state:
+            state._connection.execute("UPDATE sources SET name = 'renamed before second kill'")  # pyright: ignore[reportPrivateUsage]
+            state._connection.commit()  # pyright: ignore[reportPrivateUsage]
+        killed_again = subprocess.run(
+            killed.args,
+            env={**os.environ, "LECTERN_TEST_SCHEMA": "4"},
+            capture_output=True,
+            timeout=20,
+        )
+        assert killed_again.returncode == -signal.SIGKILL, killed_again.stderr.decode()
+        assert _bundle_tree(first.bundle_dir) == interrupted
+    monkeypatch.setattr(provenance_module, "STATE_SCHEMA_VERSION", 4)
+    with open_state(state_path) as state:
+        state._connection.execute("UPDATE sources SET name = 'renamed synthetic source'")  # pyright: ignore[reportPrivateUsage]
+        state._connection.commit()  # pyright: ignore[reportPrivateUsage]
+        rows = state._connection.execute("SELECT * FROM library_bundles").fetchall()  # pyright: ignore[reportPrivateUsage]
+        for _ in range(2):
+            replay = _run_admission_case(state, media, output, one_shot=one_shot, command=command)
+            read_selected_evidence(
+                replay.bundle_dir, replay.manifest, require_manifest_integrity=True
+            )
+            assert state.get_library_bundle(replay.manifest.bundle_id).status.value == "ready"
+            assert not (replay.bundle_dir / _PENDING_PROVENANCE).exists()
+        queue = state.list_queue()[0]
+        assert queue.state is QueueState.COMPLETED
+        assert queue.bundle_id == first.manifest.bundle_id
+        assert state._connection.execute("SELECT * FROM library_bundles").fetchall() == rows  # pyright: ignore[reportPrivateUsage]
+        if window in {"after-declaration", "after-source"}:
+            assert (first.bundle_dir / "source.json").read_bytes() == interrupted[
+                _PENDING_PROVENANCE
+            ]
+        assert (_PENDING_PROVENANCE in interrupted) == (window != "before-receipt")
+
+
+@pytest.mark.parametrize("one_shot", [False, True], ids=["queue", "one-shot"])
+@pytest.mark.parametrize("key_first", [False, True], ids=["key-last", "key-first"])
+def test_pre_receipt_schema3_recovery_under_schema4(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    one_shot: bool,
+    key_first: bool,
+) -> None:
+    """Legacy exact writer bytes keep their original provenance key placement."""
+    media = copy_fixture(tmp_path / "source")
+    output = tmp_path / "bundles"
+    with open_state(tmp_path / "state.sqlite") as state:
+        first = _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+        path = first.bundle_dir / "source.json"
+        target = json.loads(path.read_bytes())
+        target["provenance"]["state_schema_version"] = 3
+        if key_first:
+            target = {"provenance": target.pop("provenance"), **target}
+        path.write_text(json.dumps(target, indent=2) + "\n")
+        _declare_current_payload(first.bundle_dir, "source.json")
+        target["provenance"] = {"source_id": "legacy"}
+        path.write_text(json.dumps(target, indent=2) + "\n")
+        monkeypatch.setattr(provenance_module, "STATE_SCHEMA_VERSION", 4)
+        replay = _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+        evidence = read_selected_evidence(
+            replay.bundle_dir, replay.manifest, require_manifest_integrity=True
+        )
+        assert evidence.source.provenance is not None
+        assert evidence.source.provenance.state_schema_version == 4
+
+
+@pytest.mark.parametrize("one_shot", [False, True], ids=["queue", "one-shot"])
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "corrupt",
+        "mismatched",
+        "symlink",
+        "directory",
+        "traversal",
+        "edited-current",
+        "edited-receipt",
+        "edited-both",
+        "size",
+    ],
+)
+def test_pending_provenance_refuses_without_mutation(
+    tmp_path: Path,
+    one_shot: bool,
+    damage: str,
+) -> None:
+    """Intent cannot replace strict core binding, containment, or exact hash/size."""
+    media = copy_fixture(tmp_path / "source")
+    output = tmp_path / "bundles"
+    with open_state(tmp_path / "state.sqlite") as state:
+        first = _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+        bundle = first.bundle_dir
+        path = bundle / "source.json"
+        target = path.read_bytes()
+        _partial_provenance(bundle)
+        path.write_bytes(target)
+        _declare_current_payload(bundle, "source.json")
+        pending = bundle / _PENDING_PROVENANCE
+        pending.write_bytes(target)
+        payload = json.loads(target)
+        payload["provenance"] = {"source_id": "legacy"}
+        if damage in {"edited-current", "edited-both"}:
+            payload["transcript"]["method"] = "edited core"
+        path.write_text(json.dumps(payload, indent=2) + "\n")
+        if damage in {"edited-receipt", "edited-both", "traversal"}:
+            receipt = json.loads(target)
+            if damage == "traversal":
+                receipt["transcript"]["segments"] = "../outside.json"
+            else:
+                receipt["transcript"]["method"] = "edited core"
+            pending.write_text(json.dumps(receipt, indent=2) + "\n")
+        elif damage == "corrupt":
+            pending.write_text("not json")
+        elif damage in {"mismatched", "size"}:
+            manifest = Manifest.load(bundle)
+            manifest.stages[StageName.ACQUIRE].outputs = [
+                ArtifactRef(
+                    path=ref.path,
+                    sha256=("0" * 64 if damage == "mismatched" else ref.sha256),
+                    bytes=(ref.bytes or 0) + (1 if damage == "size" else 0),
+                )
+                if ref.path == "source.json"
+                else ref
+                for ref in manifest.stages[StageName.ACQUIRE].outputs
+            ]
+            manifest.save(bundle)
+        elif damage in {"symlink", "directory"}:
+            pending.unlink()
+            if damage == "symlink":
+                outside = tmp_path / "outside.json"
+                outside.write_bytes(target)
+                pending.symlink_to(outside)
+            else:
+                pending.mkdir()
+        before = _bundle_tree(bundle)
+        queue = state.list_queue()[0]
+        rows = state._connection.execute("SELECT * FROM library_bundles").fetchall()  # pyright: ignore[reportPrivateUsage]
+        with pytest.raises(AutomationError, match="replay refused"):
+            _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+        assert _bundle_tree(bundle) == before
+        assert replace(state.list_queue()[0], updated_at=queue.updated_at) == queue
+        assert state._connection.execute("SELECT * FROM library_bundles").fetchall() == rows  # pyright: ignore[reportPrivateUsage]
+        if damage == "symlink":
+            assert pending.is_symlink()
+            assert (tmp_path / "outside.json").read_bytes() == target
+        elif damage == "directory":
+            assert pending.is_dir()
+
+
+@pytest.mark.parametrize("one_shot", [False, True], ids=["queue", "one-shot"])
+@pytest.mark.parametrize("existing_receipt", [False, True], ids=["absent", "stale"])
+@pytest.mark.parametrize("rejection", ["exception", "readmission"])
+def test_pending_provenance_repair_rollback(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    one_shot: bool,
+    existing_receipt: bool,
+    rejection: str,
+) -> None:
+    """Failed publication/re-admission restores receipt bytes or absence too."""
+    media = copy_fixture(tmp_path / "source")
+    output = tmp_path / "bundles"
+    with open_state(tmp_path / "state.sqlite") as state:
+        first = _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+        target = (first.bundle_dir / "source.json").read_bytes()
+        _partial_provenance(first.bundle_dir)
+        pending = first.bundle_dir / _PENDING_PROVENANCE
+        if existing_receipt:
+            pending.write_bytes(target)
+        before = _bundle_tree(first.bundle_dir)
+        queue = state.list_queue()[0]
+        rows = state._connection.execute("SELECT * FROM library_bundles").fetchall()  # pyright: ignore[reportPrivateUsage]
+        real_write = provenance_module.atomic_write_text
+        real_attach = automation.attach_provenance_to_bundle
+
+        def fail_source(path: Path, text: str) -> Path:
+            if path.name == "source.json":
+                raise OSError("synthetic publication failure")
+            return real_write(path, text)
+
+        def rejected_attach(*args: Any, **kwargs: Any) -> None:
+            real_attach(*args, **kwargs)
+            source = first.bundle_dir / "source.json"
+            payload = json.loads(source.read_bytes())
+            payload["bytes"] += 1
+            source.write_text(json.dumps(payload, indent=2) + "\n")
+
+        if rejection == "exception":
+            monkeypatch.setattr(provenance_module, "atomic_write_text", fail_source)
+        else:
+            monkeypatch.setattr(automation, "attach_provenance_to_bundle", rejected_attach)
+        with pytest.raises(AutomationError, match="replay refused"):
+            _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+        assert _bundle_tree(first.bundle_dir) == before
+        assert replace(state.list_queue()[0], updated_at=queue.updated_at) == queue
+        assert state._connection.execute("SELECT * FROM library_bundles").fetchall() == rows  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize("one_shot", [False, True], ids=["queue", "one-shot"])
+@pytest.mark.parametrize("stale_receipt", [False, True], ids=["legacy", "stale-receipt"])
+def test_healthy_schema3_replay_under_schema4_keeps_bundle_bytes(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    one_shot: bool,
+    stale_receipt: bool,
+) -> None:
+    """A new writer version must not rewrite already healthy historical bytes."""
+    media = copy_fixture(tmp_path / "source")
+    output = tmp_path / "bundles"
+    with open_state(tmp_path / "state.sqlite") as state:
+        first = _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+        before = _bundle_tree(first.bundle_dir)
+        if stale_receipt:
+            receipt = json.loads(before["source.json"])
+            receipt["provenance"]["source_name"] = "obsolete pending source name"
+            (first.bundle_dir / _PENDING_PROVENANCE).write_text(
+                json.dumps(receipt, indent=2) + "\n"
+            )
+        monkeypatch.setattr(provenance_module, "STATE_SCHEMA_VERSION", 4)
+        replay = _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+        read_selected_evidence(replay.bundle_dir, replay.manifest, require_manifest_integrity=True)
+        assert _bundle_tree(first.bundle_dir) == before
+
+
+@pytest.mark.parametrize("one_shot", [False, True], ids=["queue", "one-shot"])
+@pytest.mark.parametrize("historical_change", ["schema", "name", "policy"])
+def test_pre_receipt_recovery_does_not_guess_unknown_history(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    one_shot: bool,
+    historical_change: str,
+) -> None:
+    """A digest alone cannot supply arbitrary historical annotation values."""
+    media = copy_fixture(tmp_path / "source")
+    output = tmp_path / "bundles"
+    with open_state(tmp_path / "state.sqlite") as state:
+        first = _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+        path = first.bundle_dir / "source.json"
+        target = json.loads(path.read_bytes())
+        field, value = {
+            "schema": ("state_schema_version", 99),
+            "name": ("source_name", "unrecoverable historical name"),
+            "policy": ("policy", "unrecoverable historical policy"),
+        }[historical_change]
+        target["provenance"][field] = value
+        path.write_text(json.dumps(target, indent=2) + "\n")
+        _declare_current_payload(first.bundle_dir, "source.json")
+        target["provenance"] = {"source_id": "legacy"}
+        path.write_text(json.dumps(target, indent=2) + "\n")
+        monkeypatch.setattr(provenance_module, "STATE_SCHEMA_VERSION", 4)
+        before = _bundle_tree(first.bundle_dir)
+        queue = state.list_queue()[0]
+        with pytest.raises(AutomationError, match="replay refused"):
+            _run_admission_case(state, media, output, one_shot=one_shot, command=None)
+        assert _bundle_tree(first.bundle_dir) == before
+        assert replace(state.list_queue()[0], updated_at=queue.updated_at) == queue

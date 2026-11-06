@@ -92,14 +92,41 @@ artifact hashes and sizes, completed stages, and strictly read selected
 transcript must all pass before success. `source.json` must be declared exactly
 once, in ACQUIRE. Only its provenance annotation is repairable: the source core
 must validate strictly, and a stale declaration must match the exact serialized
-core without provenance or with the existing writer's expected completed
-provenance under either existing consent mode, including size; an unidentifiable
-old digest is refused, not guessed.
+core without provenance, a core-bound pending receipt, or a supported writer's
+completed provenance under either existing consent mode, including size. The
+pre-receipt compatibility fallback supports schema 3 and the current writer's
+schema, preserving the original provenance key position. It uses current
+source-name/policy values: arbitrary historical names, policies, or schema
+numbers cannot be recovered from a digest alone and are refused, not guessed.
+
+The reserved bundle file `.lectern-provenance.pending.json` contains the exact
+target `source.json` bytes. The writer atomically publishes this receipt before
+declaring its hash and size in the manifest, then atomically publishes
+`source.json` and removes the receipt. A usable receipt must be a contained,
+non-symlink regular file, strictly validate as a source document with completed
+provenance, preserve the current source's exact core values (excluding only
+provenance), and match the manifest's declared source hash **and** size. It is
+transaction intent, not a second registration or integrity authority. Receipt
+recovery survives changes to writer schema and source name by retaining the
+original annotation, rather than inferring it from today's registry.
+
+A missing receipt uses ordinary admission and the bounded legacy fallback.
+Malformed, nonregular, symlinked, or different-core contents at the reserved
+path are refused without overwriting them. A recognized same-core receipt
+left before declaration may be stale: it cannot authorize a different digest,
+but does not strand an independently admissible source. If the source already
+matches its declaration and is complete, replay only removes the recognized
+receipt; public bundle bytes are otherwise unchanged. When recovering a stale
+source, the writer first publishes the exact bytes bound by the old declaration
+before replacing any intent, so a second process interruption retains a usable
+binding. This uses the existing atomic-replacement/process-crash semantics; it
+does not add concurrent-writer locking or a power-loss durability guarantee.
+
 After the existing provenance writer runs, the same boundary rechecks disk state
 and requires unconditional admission. Refusals preserve bundle files, library
 ownership, and earlier queue completion; a rejected repair restores the writer's
-source and manifest bytes. This does not establish historical input authenticity
-or change library freshness rules.
+source, manifest, and pre-existing receipt bytes (or receipt absence). This does
+not establish historical input authenticity or change library freshness rules.
 
 ## Privacy Posture
 

@@ -17,7 +17,12 @@ from lectern.integrity import (
     manifest_outputs_are_materialized,
     materialized_stage_states,
 )
-from lectern.provenance import PROVENANCE_KEYS, source_with_provenance
+from lectern.provenance import (
+    HISTORICAL_PROVENANCE_SCHEMAS,
+    PROVENANCE_KEYS,
+    pending_provenance_bytes,
+    source_with_provenance,
+)
 from lectern.records import (
     LibraryBundle,
     LibraryStatus,
@@ -36,6 +41,7 @@ class ReplayAdmission:
     reason: str = ""
     owned: bool = True
     manifest: Manifest | None = None
+    source_recovery: bytes | None = None
 
 
 def admit_replay(
@@ -52,8 +58,8 @@ def admit_replay(
     The registered bundle may live under another output root: a replay answers
     with it, as before, and never adopts a colliding directory in the new root.
     Registration records the bundle id but currently has no manifest digest.
-    Source hash exceptions recognize only exact bytes that the existing writer
-    can account for, not hypothetical historical provenance or input authenticity.
+    Source hash exceptions recognize only exact core-bound receipt bytes or
+    bounded writer representations, not arbitrary historical provenance.
     """
 
     if library is None or (
@@ -92,6 +98,7 @@ def admit_replay(
         core = cast(dict[str, Any], parsed).copy()
         provenance = core.pop("provenance", None)
         source_document = SourceDocument.model_validate_json(json.dumps(core), strict=True)
+        pending = pending_provenance_bytes(bundle, core)
 
         def matches_recorded(candidate: bytes) -> bool:
             return (
@@ -100,6 +107,7 @@ def admit_replay(
             )
 
         source_matches = matches_recorded(payload)
+        source_recovery = None
         if not source_matches:
             # Known writer representations only. Serializing the preserved core
             # retains unknown values/key order; strict validation above rejects
@@ -108,20 +116,24 @@ def admit_replay(
             # A one-shot item may subsequently be reapproved through the queue.
             # Both existing entry points' exact writer bytes are recognizable;
             # no arbitrary historical annotation is inferred from its digest.
-            annotations: list[bytes] = []
+            annotations: list[bytes] = [] if pending is None else [pending]
             for recorded_consent in {consent, "explicit_cli_invocation", "explicit_queue_approval"}:
                 annotated = source_with_provenance(
-                    core,
+                    cast(dict[str, Any], parsed),
                     source=source,
                     source_item=source_item,
                     queue_item=replace(queue_item, state=QueueState.COMPLETED),
                     consent=recorded_consent,
                 )
-                annotations.append((json.dumps(annotated, indent=2) + "\n").encode("utf-8"))
-            # The writer declares before it publishes, so an interrupted repair
-            # leaves a declaration of the fresh annotation of this same core.
-            # Recognising current bytes alone would let an edited core rebind.
-            if not any(matches_recorded(candidate) for candidate in [bare, *annotations]):
+                annotation = cast(dict[str, Any], annotated["provenance"])
+                for version in {annotation["state_schema_version"], *HISTORICAL_PROVENANCE_SCHEMAS}:
+                    annotation["state_schema_version"] = version
+                    annotations.append((json.dumps(annotated, indent=2) + "\n").encode("utf-8"))
+            source_recovery = next(
+                (candidate for candidate in [bare, *annotations] if matches_recorded(candidate)),
+                None,
+            )
+            if source_recovery is None:
                 raise ValueError(
                     "source.json differs from its declaration beyond identifiable provenance"
                 )
@@ -169,6 +181,7 @@ def admit_replay(
 
         repair = (
             not source_matches
+            or pending is not None
             or not isinstance(provenance, dict)
             or not (set(cast(dict[str, Any], provenance)) >= PROVENANCE_KEYS)
         )
@@ -180,7 +193,9 @@ def admit_replay(
                 # can remain repairable here (e.g. complete keys, wrong types).
                 repair = True
         return ReplayAdmission(
-            "admit_after_provenance_repair" if repair else "admit", manifest=manifest
+            "admit_after_provenance_repair" if repair else "admit",
+            manifest=manifest,
+            source_recovery=source_recovery,
         )
     except (OSError, ValueError, RecursionError) as exc:
         return ReplayAdmission("refuse", redact_paths(str(exc)))

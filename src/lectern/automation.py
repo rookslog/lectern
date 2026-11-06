@@ -39,6 +39,7 @@ from lectern.ingest import (
 )
 from lectern.keyframes import DEFAULT_FRAME_INTERVAL, DEFAULT_MAX_FRAMES
 from lectern.provenance import (
+    PENDING_PROVENANCE_NAME,
     PROVENANCE_KEYS,
     attach_provenance_to_bundle,
     bundle_provenance_needs_repair,
@@ -620,6 +621,7 @@ class AutomationState(AutomationStateStore):
                 source_item=source_item,
                 queue_item_id=queue_item.id,
                 consent=consent,
+                source_recovery=admission.source_recovery,
             )
         # Do not repoint a prior completion until repair and re-admission pass.
         self._set_queue_state(
@@ -635,12 +637,15 @@ class AutomationState(AutomationStateStore):
         source_item: SourceItem,
         queue_item_id: str,
         consent: str,
+        source_recovery: bytes | None = None,
     ) -> IngestResult:
         """Repair only an admitted candidate, then re-admit its actual disk state."""
 
         originals = {
             name: (result.bundle_dir / name).read_bytes() for name in ("source.json", MANIFEST_NAME)
         }
+        pending_path = result.bundle_dir / PENDING_PROVENANCE_NAME
+        pending_original = pending_path.read_bytes() if pending_path.exists() else None
         try:
             attach_provenance_to_bundle(
                 result.bundle_dir,
@@ -650,6 +655,7 @@ class AutomationState(AutomationStateStore):
                 # the repaired bundle passes admission.
                 queue_item=replace(self.get_queue_item(queue_item_id), state=QueueState.COMPLETED),
                 consent=consent,
+                source_recovery=source_recovery,
             )
             admission = admit_replay(
                 result.manifest.bundle_id,
@@ -665,13 +671,21 @@ class AutomationState(AutomationStateStore):
                     f"{admission.reason or admission.outcome}"
                 )
         except Exception as exc:
-            # A rejected/failed repair must not leave its two writer-owned files
+            # A rejected/failed repair must not leave its writer-owned files
             # changed. Hard process interruption still leaves the ordinary
             # recoverable source/manifest window for the next replay.
             for name, payload in originals.items():
                 path = result.bundle_dir / name
                 if path.is_symlink() or not path.exists() or path.read_bytes() != payload:
                     atomic_write_text(path, payload.decode("utf-8"))
+            if pending_original is None:
+                pending_path.unlink(missing_ok=True)
+            elif (
+                pending_path.is_symlink()
+                or not pending_path.exists()
+                or pending_path.read_bytes() != pending_original
+            ):
+                atomic_write_text(pending_path, pending_original.decode("utf-8"))
             if isinstance(exc, AutomationError):
                 raise
             raise AutomationError(
