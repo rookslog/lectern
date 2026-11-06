@@ -10,6 +10,7 @@ from typing import Any, cast
 from lectern.bundle import StageName, StageRecord, StageState
 from lectern.evidence import read_frames, read_transcript_metadata
 from lectern.keyframes import FRAME_EVIDENCE_LIMIT, FRAME_METHOD
+from lectern.marks import mark_cite, mark_line
 from lectern.readable import format_time, plain_field
 from lectern.records import AutomationError, LibraryStatus, redact_paths
 from lectern.search import AnchorResolution, make_anchor, resolve_against_segments
@@ -30,13 +31,9 @@ _LIST_MARKER = re.compile(r"^\s*(?:[-+*]|[0-9]+[.)])\s*$")
 _SETEXT = re.compile(r"^\s*(?:=+|-+)\s*$")
 
 
-def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
-    """Export only registered ready evidence; keep hashes over the original text."""
+def packet_cite_id(bundle_id: str) -> str:
+    """Use the same path-free registered identity for packet and mark citations."""
 
-    bundle = state.get_library_bundle(bundle_id)  # derives readiness once
-    if bundle.status is not LibraryStatus.READY:
-        raise AutomationError(f"bundle {bundle_id} is {bundle.status.value}; requires ready")
-    evidence = state.get_registered_evidence(bundle_id)
     # Keep ingest suffixes and safe full migrated ids; unsafe ids need a stable,
     # path-free digest that the checker can expand against registered identities.
     suffix = bundle_id.rsplit("-", 1)[-1]
@@ -48,6 +45,19 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
             if re.fullmatch(r"[^\s\[\]#]+", bundle_id) and redact_paths(bundle_id) == bundle_id
             else hashlib.sha256(bundle_id.encode("utf-8")).hexdigest()[:12]
         )
+    return cite_id
+
+
+def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
+    """Export only registered ready evidence; keep hashes over the original text."""
+
+    bundle = state.get_library_bundle(bundle_id)  # derives readiness once
+    if bundle.status is not LibraryStatus.READY:
+        raise AutomationError(f"bundle {bundle_id} is {bundle.status.value}; requires ready")
+    evidence = state.get_registered_evidence(bundle_id)
+    cite_id = packet_cite_id(bundle_id)
+    suffix = bundle_id.rsplit("-", 1)[-1]
+    short_id = suffix if "-" in bundle_id and _SHORT_ID.fullmatch(suffix) else None
     manifest = state.get_library_manifest(bundle_id)
     metadata = read_transcript_metadata(Path(bundle.bundle_path), manifest, evidence.source)
     visual = read_frames(Path(bundle.bundle_path), manifest)
@@ -133,6 +143,16 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
             "source": source_facts,
             "layers": layers,
             "segments": segments,
+            "marks": [
+                {
+                    "t": mark["t_s"],
+                    "kind": mark["kind"],
+                    "text": mark["text"],
+                    "binding": mark["binding"],
+                    "cite": mark_cite(mark, cite_id),
+                }
+                for mark in state.list_marks(bundle_id, require_ready=False)
+            ],
             "frames": []
             if visual is None
             else [
@@ -202,6 +222,10 @@ def packet_markdown(packet: dict[str, Any]) -> str:
     lines.extend(["", "## Segments", ""])
     for segment in packet["segments"]:
         lines.append(f"{segment['anchor']['cite']} {segment['text']}")
+    if packet.get("marks"):
+        lines.extend(["", "## Marks", ""])
+        for mark in packet["marks"]:
+            lines.append(mark_line(mark["t"], mark["kind"], mark["text"], mark["cite"]))
     if packet.get("frames"):
         lines.extend(
             [

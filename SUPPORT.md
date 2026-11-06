@@ -23,7 +23,7 @@ automation state schema version are separate.
   automation store (sources, discovery queue, and library index).
 
 The current package version is `0.0.1`. The current manifest schema version is
-`1.1.0`. The current automation state schema version is `3`.
+`1.1.0`. The current automation state schema version is `4`.
 
 Before a stable release, CLI flags and command output may change. Bundle schema
 changes are treated more carefully. Version increments classify changes:
@@ -76,6 +76,10 @@ Current behavior when a store's version differs from the running code's:
 - The retrieval index records the text-normalization and segmentation rules
   it was built under. If a later version changes either, the index is
   rebuilt on open rather than queried under rules it was not written with.
+- A store at version 3 gains the listening-marks table on open, preserving
+  existing library and retrieval data. Marks follow the index's versioned
+  additive-table migration pattern; older Lectern versions refuse schema 4
+  rather than opening it. Bundle evidence and manifest versions do not change.
 - An empty or uninitialized store is created at the current version.
 - A store written by a newer version than the running code supports is refused
   with an error naming both versions; Lectern does not open it and does not

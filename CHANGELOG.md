@@ -9,6 +9,13 @@ versioned release notes will become stricter once preview support stabilizes.
   following #64's pass-through/no-quality-claim boundary: faster-whisper
   `hotwords`, command `LECTERN_TERMS`, exact term provenance and bundle identity,
   explicit sidecar non-application, and library/packet inspection.
+- Preserve 5.1 AC3 normalization by accepting bounded, authentic FFmpeg
+  side-data diagnostics from an already observed analysis filter. Exact tagged
+  frame parsing, continuity checks, and the aggregate padding budget are unchanged.
+- Added experimental S5 listening marks: idempotent UTF-8 import and listing,
+  exact/nearby transcript binding, and marks in JSON/Markdown agent packets.
+  Marks stay in local state, not bundle evidence; following the retrieval-index
+  migration pattern, automation state advances from schema 3 to 4.
 - Fixed timed-caption/local-ASR follow-ups (#89): preserve ordinary repeated
   VTT cues while de-duplicating rolling captions; bind derived language/method
   to language-tagged caption approvals; preserve Hub model IDs while redacting
@@ -21,6 +28,29 @@ versioned release notes will become stricter once preview support stabilizes.
   report oversized numeric tokens as malformed (#94). Citation checks now show
   uncited paragraph locations/excerpts and pasteable time corrections without
   changing citation validity, exit codes, or the plain summary line (#95).
+- Preserved source-container audio offsets during normalization so transcript
+  times align with video (#84, part: audio timeline).
+- Bound aggregate leading/interior normalization silence to 600 seconds using an
+  uncompensated, streaming FFmpeg decoded-frame analysis through EOF. It has a
+  60-second whole-pass deadline, bounded records/memory, exact per-run tagged
+  timing, and refuses indeterminate rate/reinit/backward/overlap configurations
+  before PCM output. This supersedes the initial-only, 64-packet `ffprobe` guard;
+  audio normalization no longer requires `ffprobe`. Canonical WAV copy, bounded
+  timestamp jitter, and ordinary delayed/gapped audio are preserved. General
+  decoded-duration expansion and hostile-decoder isolation remain outside this
+  guard (#84).
+- Refuse ingest replays of damaged owned bundles before provenance repair (#82).
+  Queue and one-shot replay now share artifact, completed-stage, and strict
+  selected-transcript admission checks; provenance-only recovery is checked again
+  on disk before reporting success and preserves prior completion on refusal.
+- Retain core-bound pending provenance bytes before declaring a repaired source
+  (#103). Interrupted queue and one-shot repairs can recover across writer schema
+  and source-name changes, including non-final provenance keys. Recognized stale
+  receipts are cleaned up; invalid receipt paths/contents and edited cores are
+  refused. Failed repairs restore receipt bytes or absence along with source and
+  manifest. Pre-receipt recovery supports schema 3 and the current writer only,
+  with unchanged source-name/policy values; arbitrary historical annotations are
+  not inferred from a digest.
 - Raised the writer's manifest schema to `1.1.0` for optional transcript
   language/ASR backend metadata, `source.external`, and stage warnings. Readers
   accept both `1.0.0` and `1.1.0` without migration and refuse other versions,

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from lectern import __version__
-from lectern.agent_packet import check_citations, packet_markdown, talk_packet
+from lectern.agent_packet import check_citations, packet_cite_id, packet_markdown, talk_packet
 from lectern.automation import (
     DEFAULT_STATE_PATH,
     DEFAULT_YOUTUBE_API_KEY_ENV,
@@ -34,6 +34,7 @@ from lectern.keyframes import (
     KeyframeError,
     validate_frame_options,
 )
+from lectern.marks import mark_cite, mark_line
 from lectern.migrations import MigrationError, migrate_bundle
 from lectern.readable import format_time, source_details
 from lectern.readable import plain_field as _plain_search_field
@@ -62,6 +63,8 @@ OUTWARD_COMMANDS = (
     "library show",
     "library search",
     "library cite",
+    "marks import",
+    "marks list",
     "transcript",
     "export",
     "check-citations",
@@ -76,6 +79,7 @@ commands:
   export         export an experimental talk packet for agents
   ingest         ingest local media into a bundle
   library        list, search, or cite ingested bundles from local state
+  marks          import or list experimental time-bound listening marks
   migrate        migrate one bundle to the current manifest schema
   queue          inspect and update discovery queue items
   schema export  print or write the manifest JSON Schema
@@ -922,6 +926,60 @@ def _export(args: Sequence[str]) -> int:
     return 0
 
 
+def _marks(args: Sequence[str]) -> int:
+    rest, state_path, json_output = _parse_common(args)
+    if (
+        not rest
+        or rest[0] not in ("import", "list")
+        or len(rest) != (3 if rest[0] == "import" else 2)
+        or any(part.startswith("-") for part in rest[1:])
+    ):
+        print(
+            "usage: lectern marks {import BUNDLE FILE|list BUNDLE} [--state PATH] [--json]",
+            file=sys.stderr,
+        )
+        return 2
+    command, bundle_id = rest[:2]
+    text = ""
+    if command == "import":
+        try:
+            text = Path(rest[2]).read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeError) as exc:
+            print(f"marks: {_plain_search_field(redact_paths(str(exc)))}", file=sys.stderr)
+            return 1
+    try:
+        with open_state(state_path) as state:
+            if command == "import":
+                report = state.import_marks(bundle_id, text, Path(rest[2]).name)
+                if json_output:
+                    _print_json(report)
+                else:
+                    for error in report["errors"]:
+                        print(f"line {error['line_no']}: {error['reason']}", file=sys.stderr)
+                    print(
+                        f"added {report['added']}, already present {report['already_present']}, "
+                        f"malformed {report['malformed']}"
+                    )
+                return 1 if report["malformed"] else 0
+            marks = state.list_marks(bundle_id)
+    except (AutomationError, ValueError, RecursionError, sqlite3.Error, OSError) as exc:
+        print(f"marks: {_plain_search_field(redact_paths(str(exc)))}", file=sys.stderr)
+        return 3
+    if json_output:
+        _print_json({"marks": [_project_metadata_values(mark) for mark in marks]})
+    else:
+        cite_id = packet_cite_id(bundle_id)
+        for mark in marks:
+            print(
+                _plain_search_field(
+                    redact_paths(
+                        mark_line(mark["t_s"], mark["kind"], mark["text"], mark_cite(mark, cite_id))
+                    )
+                )
+            )
+    return 0
+
+
 def _check_citations(args: Sequence[str]) -> int:
     rest, state_path, json_output = _parse_common(args)
     if len(rest) != 1 or rest[0].startswith("-"):
@@ -1151,6 +1209,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _transcript(args[1:])
         if args and args[0] == "export":
             return _export(args[1:])
+        if args and args[0] == "marks":
+            return _marks(args[1:])
         if args and args[0] == "check-citations":
             return _check_citations(args[1:])
         if args and args[0] == "queue":

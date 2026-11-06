@@ -35,6 +35,8 @@ this document plans but does not yet implement.
 | situate | planned, not implemented | transcript + references | contextual notes for synthesis | Positions the source in relation to resolved references and prior bundle context. |
 | synthesize | partially implemented | bundle artifacts | `analysis/summary.md` (implemented as an overview card); `analysis/claims.md`, `analysis/questions.md` (planned) | The overview card records title, duration, transcript method, counts and time span. Lectern does not summarize; summaries are left to agents citing transcript anchors. |
 
+Normalization preserves audio offsets so transcript times are on the source container's timeline.
+
 The bundle layout below shows the full planned layout, including the paths the
 unimplemented stages would write; the current preview produces only the
 artifacts of the implemented stages.
@@ -70,6 +72,9 @@ and resumability stay centralized.
 
 ## Architecture
 
+Lectern stores the time-bound listening gesture; its meaning, answers, and
+semantic connections belong outside Lectern, in Scholia.
+
 - The portable core is Python-first: bundle management, schemas, CLI entry
   points, and stage orchestration live in the package.
 - Local automation state is SQLite-backed. Source registry, discovery queue,
@@ -81,6 +86,52 @@ and resumability stay centralized.
   after the bundle contract and stage behavior are stable.
 - JSON schemas are committed generated artifacts and should be regenerated with
   the source changes that alter them.
+
+## Replay and Recovery
+
+Queue and one-shot ingest replay share a nonwriting admission boundary: the
+candidate must belong to the queue item, source, and source item in the library;
+a candidate registered under another output root answers the replay from there,
+and a colliding directory in the requested root is never adopted. Its registered manifest identity, contained artifact paths, declarations,
+artifact hashes and sizes, completed stages, and strictly read selected
+transcript must all pass before success. `source.json` must be declared exactly
+once, in ACQUIRE. Only its provenance annotation is repairable: the source core
+must validate strictly, and a stale declaration must match the exact serialized
+core without provenance, a core-bound pending receipt, or a supported writer's
+completed provenance under either existing consent mode, including size. The
+pre-receipt compatibility fallback supports schema 3 and the current writer's
+schema, preserving the original provenance key position. It uses current
+source-name/policy values: arbitrary historical names, policies, or schema
+numbers cannot be recovered from a digest alone and are refused, not guessed.
+
+The reserved bundle file `.lectern-provenance.pending.json` contains the exact
+target `source.json` bytes. The writer atomically publishes this receipt before
+declaring its hash and size in the manifest, then atomically publishes
+`source.json` and removes the receipt. A usable receipt must be a contained,
+non-symlink regular file, strictly validate as a source document with completed
+provenance, preserve the current source's exact core values (excluding only
+provenance), and match the manifest's declared source hash **and** size. It is
+transaction intent, not a second registration or integrity authority. Receipt
+recovery survives changes to writer schema and source name by retaining the
+original annotation, rather than inferring it from today's registry.
+
+A missing receipt uses ordinary admission and the bounded legacy fallback.
+Malformed, nonregular, symlinked, or different-core contents at the reserved
+path are refused without overwriting them. A recognized same-core receipt
+left before declaration may be stale: it cannot authorize a different digest,
+but does not strand an independently admissible source. If the source already
+matches its declaration and is complete, replay only removes the recognized
+receipt; public bundle bytes are otherwise unchanged. When recovering a stale
+source, the writer first publishes the exact bytes bound by the old declaration
+before replacing any intent, so a second process interruption retains a usable
+binding. This uses the existing atomic-replacement/process-crash semantics; it
+does not add concurrent-writer locking or a power-loss durability guarantee.
+
+After the existing provenance writer runs, the same boundary rechecks disk state
+and requires unconditional admission. Refusals preserve bundle files, library
+ownership, and earlier queue completion; a rejected repair restores the writer's
+source, manifest, and pre-existing receipt bytes (or receipt absence). This does
+not establish historical input authenticity or change library freshness rules.
 
 ## Privacy Posture
 
