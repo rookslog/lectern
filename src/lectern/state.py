@@ -21,8 +21,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn, Self, cast
 
-from lectern.bundle import Manifest, SourceDocument, StageState, TranscriptSegmentsDocument
+from lectern.bundle import Manifest, TranscriptSegmentsDocument
 from lectern.evidence import SelectedEvidence, read_selected_evidence
+from lectern.integrity import (
+    assert_registered_source_identity as _assert_registered_source_identity,
+)
+from lectern.integrity import (
+    load_registered_manifest as _load_registered_manifest,
+)
+from lectern.integrity import (
+    manifest_outputs_are_materialized as _manifest_outputs_are_materialized,
+)
+from lectern.integrity import (
+    materialized_stage_states,
+)
 from lectern.marks import bind_mark, parse_mark
 from lectern.records import (
     LEGAL_QUEUE_TRANSITION_SOURCE_VALUES,
@@ -44,7 +56,6 @@ from lectern.records import (
     SourcePolicy,
     SourceRecord,
     derive_library_status,
-    digest_and_size,
     make_queue_item_id,
     make_source_id,
     metadata_to_json,
@@ -1651,15 +1662,7 @@ def _library_status_from_row(row: sqlite3.Row) -> LibraryStatus:
             queue_state, (), manifest_available=False, source_changed=bundle_path.is_symlink()
         )
 
-    materialized_stages = [
-        record.state.value
-        for record in manifest.stages.values()
-        if record.state is not StageState.PENDING
-        or record.started is not None
-        or record.finished is not None
-        or record.outputs
-        or record.error is not None
-    ]
+    materialized_stages = materialized_stage_states(manifest)
     try:
         evidence = read_selected_evidence(bundle_path, manifest, require_manifest_integrity=True)
         _assert_registered_source_identity(evidence.source, manifest)
@@ -1679,26 +1682,6 @@ def _library_status_from_row(row: sqlite3.Row) -> LibraryStatus:
     )
 
 
-def _load_registered_manifest(bundle_id: str, bundle_path: Path) -> Manifest:
-    manifest = Manifest.load(bundle_path)
-    if manifest.bundle_id != bundle_id:
-        raise ValueError("registered bundle id does not match manifest bundle id")
-    return manifest
-
-
-def _assert_registered_source_identity(source: SourceDocument, manifest: Manifest) -> None:
-    if (
-        source.source.kind != manifest.source.kind
-        or source.source.ref != manifest.source.ref
-        or source.source.bytes != manifest.source.bytes
-    ):
-        raise ValueError("registered source identity does not match manifest source")
-    if manifest.source.kind.value == "local" and (
-        manifest.source.ref != f"sha256:{source.sha256}" or manifest.source.bytes != source.bytes
-    ):
-        raise ValueError("registered source content identity does not match manifest source")
-
-
 def _read_registered_segments(
     bundle_id: str,
     bundle_path: Path,
@@ -1711,44 +1694,6 @@ def _read_registered_segments(
     )
     _assert_registered_source_identity(evidence.source, manifest)
     return evidence.segments_payload, evidence.segments
-
-
-def _manifest_outputs_are_materialized(bundle_path: Path, manifest: Manifest) -> bool:
-    try:
-        if bundle_path.is_symlink():
-            return False
-        resolved_bundle = bundle_path.resolve(strict=True)
-    except OSError:
-        return False
-    for stage in manifest.stages.values():
-        for output in stage.outputs:
-            relative = Path(output.path)
-            if relative.is_absolute() or ".." in relative.parts:
-                return False
-            candidate = bundle_path / relative
-            try:
-                resolved_candidate = candidate.resolve(strict=True)
-                if (
-                    _has_symlink_component(bundle_path, relative)
-                    or not resolved_candidate.is_relative_to(resolved_bundle)
-                    or not resolved_candidate.is_file()
-                ):
-                    return False
-                digest, size = digest_and_size(resolved_candidate)
-            except OSError:
-                return False
-            if size != output.bytes or digest != output.sha256:
-                return False
-    return True
-
-
-def _has_symlink_component(bundle_path: Path, relative: Path) -> bool:
-    candidate = bundle_path
-    for part in relative.parts:
-        candidate /= part
-        if candidate.is_symlink():
-            return True
-    return False
 
 
 def _bounded_search_snippet(display: str, query: str, *, limit: int = 240) -> str:
