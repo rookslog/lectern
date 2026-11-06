@@ -5,6 +5,12 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Documented an external-tool handoff for private and unlisted playlists:
+  authenticated downloads and raw metadata stay in private staging outside the
+  watched inbox; an operator-owned scalar-field projection creates a new sidecar
+  before only matching media is copied. Clarified that Lectern's metadata
+  whitelist governs persistence, not raw reads, and is not a secret detector.
+  Account sign-in and private-playlist integration remain unimplemented.
 - Added user-supplied named-term hints for one-shot and queued ingest (#65),
   following #64's pass-through/no-quality-claim boundary: faster-whisper
   `hotwords`, command `LECTERN_TERMS`, exact term provenance and bundle identity,

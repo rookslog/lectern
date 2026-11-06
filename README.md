@@ -256,12 +256,16 @@ Obtaining media is your own action and rights judgment, outside Lectern: use
 media you have the right to access. Lectern includes no downloader. Place local
 media in an inbox folder with optional adjacent files:
 
-- `<stem>.info.json` in yt-dlp's `--write-info-json` format. Lectern reads only
+- `<stem>.info.json`, a JSON object using yt-dlp-compatible metadata keys.
+  Lectern selects only
   `id`, `title`, `channel` (fallback `uploader`), `upload_date` (YYYYMMDD),
   `duration`, `webpage_url`, `language`, `playlist_id`, `playlist_title` (fallback
-  `playlist`), `playlist_index`, and `extractor_key`; all other keys are ignored
-  and never copied into bundles. Missing fields are fine. Malformed metadata is
-  ignored with an acquire-stage warning; its bytes still bind queue approval.
+  `playlist`), `playlist_index`, and `extractor_key` for persistence. Other keys
+  are not copied into bundles, but Lectern captures and parses the raw sidecar
+  before selecting fields: this whitelist is not a raw-read firewall. Missing
+  fields are fine. Malformed metadata is ignored with an acquire-stage warning;
+  its bytes still bind queue approval. For authenticated downloads, construct a
+  new selected-metadata sidecar outside Lectern as described below.
 - `<stem>.<lang>.vtt` for timed captions, using the selection rules above.
 
 ```bash
@@ -310,6 +314,83 @@ past an hour. JSON includes `bundle_id`, `title`, and segments with `id`, `start
 `end_s`, and `text`. The command refuses non-ready bundles.
 
 Use `--json` on source, queue, and library commands for machine-readable output.
+
+### Private and unlisted playlists
+
+Lectern has no account sign-in (OAuth) or browser-cookie integration. Unlisted
+playlists generally open from their link without sign-in; private playlists
+need an authorized account's session. Fetching remains your own action and
+rights judgment, using your own external tool.
+
+For example, let yt-dlp use your Firefox session, without exporting cookies.
+Write authenticated media and raw metadata to private staging **outside the
+watched source**, never directly into the inbox:
+
+```bash
+umask 077
+mkdir -p "$HOME/Lectern/private-staging" "$HOME/Lectern/inbox"
+chmod 700 "$HOME/Lectern/private-staging" "$HOME/Lectern/inbox"
+yt-dlp --cookies-from-browser firefox --write-info-json \
+  -o "$HOME/Lectern/private-staging/%(id)s.%(ext)s" 'https://www.youtube.com/playlist?list=PL...'
+```
+
+Watch only `~/Lectern/inbox`, not staging or their parent `~/Lectern`.
+Raw downloader metadata can contain cookies, HTTP headers, signed media URLs,
+and nested downloader state; not every download contains these. Keep raw files
+private in staging, outside Lectern.
+
+Before scanning, select **one** staged `.info.json`. Replace `VIDEO_ID` below
+with its actual filename stem. Run this operator-owned, external Python stdlib
+step to write a **new** inbox sidecar containing only supported scalar fields;
+wrongly typed values (including dictionaries/lists) are omitted:
+
+```bash
+python3 - "$HOME/Lectern/private-staging/VIDEO_ID.info.json" \
+  "$HOME/Lectern/inbox/VIDEO_ID.info.json" <<'PY'
+import json
+import math
+import sys
+from pathlib import Path
+
+raw = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if not isinstance(raw, dict):
+    raise SystemExit("Expected one metadata object")
+text_keys = (
+    "title", "channel", "uploader", "upload_date", "extractor_key", "id",
+    "webpage_url", "playlist_id", "playlist_title", "playlist", "language",
+)
+selected = {key: raw[key] for key in text_keys if type(raw.get(key)) is str}
+duration = raw.get("duration")
+if type(duration) in (int, float) and math.isfinite(duration) and duration >= 0:
+    selected["duration"] = duration
+index = raw.get("playlist_index")
+if type(index) is int and index >= 0:
+    selected["playlist_index"] = index
+Path(sys.argv[2]).write_text(
+    json.dumps(selected, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8"
+)
+PY
+```
+
+This overwrites the selected output with one JSON object on each run. It does
+not copy cookies, `http_headers`, `formats`, media download URLs, or arbitrary
+nested state. It is not a universal secret detector: selected strings still
+need appropriate operator care, especially `webpage_url`; field selection does
+not guarantee credential-free values. Review the selected metadata before
+handing it over.
+
+Then copy **only the matching media**, replacing `EXT` with its actual extension
+(e.g. `mp4` or `webm`), so `VIDEO_ID.EXT` pairs with `VIDEO_ID.info.json`:
+
+```bash
+cp "$HOME/Lectern/private-staging/VIDEO_ID.EXT" "$HOME/Lectern/inbox/VIDEO_ID.EXT"
+```
+
+Never bulk-copy staging or copy original downloader sidecars into the inbox.
+Only the clean selected input is handed to Lectern in this recipe; keep both
+staging and the inbox private. Now scan the inbox and approve/ingest as above.
+This external-tool handoff does not implement account linking or close the
+private-playlist integration requirement in Lectern.
 
 ### Marks (experimental)
 
@@ -483,7 +564,9 @@ not rerun for the current segmenter version.
 ## Current Limits
 
 - YouTube support is limited to public-playlist metadata discovery through an
-  API key. OAuth/private playlist access is not implemented.
+  API key. OAuth/private playlist access is not implemented in Lectern; private
+  playlists can reach Lectern through the inbox folder (see "Private and unlisted
+  playlists").
 - Lectern does not download media, captions, or transcripts from external
   services.
 - MCP/API access, ranked or semantic search, OCR, reference resolution, and
