@@ -18,7 +18,7 @@ Prerequisites:
 
 - Python 3.12 or newer
 - `uv`
-- `ffmpeg`
+- `ffmpeg` and `ffprobe`
 
 Check that Lectern can be installed from the public repository:
 
@@ -56,7 +56,7 @@ Prerequisites:
 
 - Python 3.12 or newer
 - `uv`
-- `ffmpeg` for media work beyond the scaffold
+- `ffmpeg` and `ffprobe` for media work beyond the scaffold
 
 ```bash
 make sync
@@ -91,6 +91,30 @@ anchors, but it does not bundle an ASR model, does not call remote transcription
 providers, and does not claim transcript faithfulness. A user-supplied command
 runs with the user's privileges; Lectern cannot prove that command never opens a
 network connection.
+
+Normalization preserves ordinary leading and interior audio gaps on the container
+timeline. Before writing PCM for non-canonical audio, Lectern uses `ffmpeg` to
+decode the automatically selected audio through EOF without filling gaps. It
+refuses aggregate timestamp-induced silence above **600 seconds** (an exactly
+600-second sample-clock displacement is accepted). This no-file analysis has a
+**60-second whole-pass deadline**, 4096-byte record limit, and bounded streaming
+memory; it requires FFmpeg's `asettb` (`1/sr`) and tagged `ashowinfo` frame output.
+Normalization itself does not require `ffprobe`. Canonical 16 kHz mono 16-bit WAV
+files still use a direct copy without analysis.
+
+The guard uses a conservative sample-clock high-water bound, not a sum of
+positive adjacent timestamp differences: ordinary bounded jitter does not
+accumulate with recording length. Negative initial codec priming and small
+overlaps are accounted for. Missing/malformed frame timing, rate/format changes,
+filter reinitialization, backward timestamps, and clock overlap/drift of 50 ms
+or more are refused rather than guessed or retimed. Near the budget boundary,
+jitter can conservatively cause refusal even when the resampler would insert
+slightly less silence. Full decoding adds work proportional to recording
+length; media that cannot finish analysis in 60 seconds is refused, without
+imposing a fixed recording-duration limit. This is not a hostile-media sandbox
+or an output-size limit: decoded audio duration and decoder resource use remain
+outside this timestamp-padding guard. Interior-gap/VFR provenance remains
+separate work under #84.
 
 ### Caption sidecars and local ASR
 
