@@ -29,7 +29,7 @@ this document plans but does not yet implement.
 | acquire | implemented | source reference | `media/`, `source.json` | Source metadata and media capture. |
 | normalize | implemented | media | `media/audio.wav` | Local ffmpeg normalization. |
 | transcribe | implemented | audio | `transcript/segments.json`, `transcript/transcript.md`, `transcript/metadata.json` | Timestamped speech segments plus method/provenance metadata. |
-| diarize | planned, not implemented | audio + transcript | `transcript/diarization.json` | Optional speaker structure. |
+| diarize | implemented (optional) | audio + transcript | `transcript/diarization.json` | Optional speaker structure. |
 | visual | planned, not implemented | video | `visual/frames/`, `visual/slides.json` | Frame sampling, OCR, and visual descriptions. |
 | enrich | planned, not implemented | transcript + visuals | `refs/references.json` | Extracted names, titles, URLs, and identifiers. |
 | situate | planned, not implemented | transcript + references | contextual notes for synthesis | Positions the source in relation to resolved references and prior bundle context. |

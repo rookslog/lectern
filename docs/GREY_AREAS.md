@@ -24,9 +24,27 @@ The honest list: things that are legally, ethically, or technically unsettled, m
 
 ## 4. Diarization licensing
 
-**The grey zone.** pyannote (the local SOTA) requires gated HuggingFace weights with their own license terms; we can't vendor or assume it.
+**The grey zone.** Diarization code and pretrained models carry separate license
+terms; optional setup must make both visible rather than assume one license
+covers the whole pipeline.
 
 **Position.** Diarization is an optional extra (`lectern[diarize]`) with its own setup step; the pipeline degrades gracefully without it. No core feature may depend on speaker labels.
+
+The optional backend uses two ungated models:
+
+- [Silero VAD v6.2.3](https://github.com/snakers4/silero-vad/tree/v6.2.3),
+  `silero_vad.onnx`, under [MIT](https://github.com/snakers4/silero-vad/blob/v6.2.3/LICENSE).
+- [WeSpeaker ResNet34-LM VoxCeleb](https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM),
+  saved as `embedding.onnx`, under CC BY 4.0 per
+  [WeSpeaker's pretrained-model documentation](https://github.com/wenet-e2e/wespeaker/blob/master/docs/pretrained.md).
+
+Fetching remains user-initiated via `--allow-model-download`, over HTTPS with
+pinned SHA-256 and size verification. Lectern does not vendor either model.
+The post-embedding counting, spectral clustering and temporal smoothing code is
+vendored from `diarize` 0.1.2 under Apache-2.0; see its
+[provenance and modification record](../src/lectern/_vendor/diarize/VENDORED.md)
+and [license](../src/lectern/_vendor/diarize/LICENSE). Lectern's ONNX glue replaces
+upstream audio/model loading without PyTorch; modified files carry notices.
 
 ## 5. Live recordings of other people
 

@@ -80,14 +80,16 @@ def test_state_store_defines_no_transport_or_adapter_of_its_own() -> None:
     assert not [name for name in defined_classes(state) if name.endswith("Adapter")]
 
 
-def test_only_the_youtube_module_opens_the_network() -> None:
+def test_only_explicit_provider_and_model_boundaries_open_the_network() -> None:
     modules_with_transport = {
         path.relative_to(PACKAGE).as_posix()
         for path in PACKAGE.rglob("*.py")
         if "urllib.request" in path.read_text(encoding="utf-8")
     }
 
-    assert modules_with_transport == {"sources/youtube.py"}
+    # S8 adds an explicit-per-invocation, pinned model fetch boundary. Media
+    # processing and the state store still must not implement transport.
+    assert modules_with_transport == {"sources/youtube.py", "diarization.py"}
 
 
 def test_orchestration_sits_above_the_store() -> None:
