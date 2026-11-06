@@ -92,16 +92,28 @@ providers, and does not claim transcript faithfulness. A user-supplied command
 runs with the user's privileges; Lectern cannot prove that command never opens a
 network connection.
 
-Normalization preserves ordinary initial audio delays on the container timeline.
-Non-canonical audio requires `ffprobe` as well as `ffmpeg`: before writing PCM,
-Lectern checks decoded audio starts relative to the input/container start and
-refuses initial silence above **600 seconds** (600 is accepted). The probe has a
-10-second timeout, examines at most 64 audio packets, and accepts at most 64 KiB
-of timing JSON. If a start cannot be established for every audio stream within
-these limits, ingest refuses rather than guessing or truncating the media.
-Canonical 16 kHz mono 16-bit WAV files still use a direct copy without probing.
-This is not a hostile-media sandbox: compressed-media duration and interior
-timestamp gaps can still expand output. Interior-gap/VFR provenance remains
+Normalization preserves ordinary leading and interior audio gaps on the container
+timeline. Before writing PCM for non-canonical audio, Lectern uses `ffmpeg` to
+decode the automatically selected audio through EOF without filling gaps. It
+refuses aggregate timestamp-induced silence above **600 seconds** (an exactly
+600-second sample-clock displacement is accepted). This no-file analysis has a
+**60-second whole-pass deadline**, 4096-byte record limit, and bounded streaming
+memory; it requires FFmpeg's `asettb` (`1/sr`) and tagged `ashowinfo` frame output.
+Normalization itself does not require `ffprobe`. Canonical 16 kHz mono 16-bit WAV
+files still use a direct copy without analysis.
+
+The guard uses a conservative sample-clock high-water bound, not a sum of
+positive adjacent timestamp differences: ordinary bounded jitter does not
+accumulate with recording length. Negative initial codec priming and small
+overlaps are accounted for. Missing/malformed frame timing, rate/format changes,
+filter reinitialization, backward timestamps, and clock overlap/drift of 50 ms
+or more are refused rather than guessed or retimed. Near the budget boundary,
+jitter can conservatively cause refusal even when the resampler would insert
+slightly less silence. Full decoding adds work proportional to recording
+length; media that cannot finish analysis in 60 seconds is refused, without
+imposing a fixed recording-duration limit. This is not a hostile-media sandbox
+or an output-size limit: decoded audio duration and decoder resource use remain
+outside this timestamp-padding guard. Interior-gap/VFR provenance remains
 separate work under #84.
 
 ### Caption sidecars and local ASR

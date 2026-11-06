@@ -11,6 +11,7 @@ import subprocess
 import sys
 import wave
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -23,8 +24,8 @@ FIXTURE = Path(__file__).parent / "fixtures/synthetic_talk.wav"
 @pytest.fixture
 def ffmpeg() -> str:
     binary = shutil.which("ffmpeg")
-    if binary is None or shutil.which("ffprobe") is None:
-        pytest.skip("ffmpeg and ffprobe are required")
+    if binary is None:
+        pytest.skip("ffmpeg is required")
     return binary
 
 
@@ -257,3 +258,138 @@ def test_start_only_filter_control_still_expands_small_timestamp_gap(
         )
         _, duration = _wav_times(output)
         assert math.isclose(duration, 3, abs_tol=0.001)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "PTS+gte(T,0.5)*601/TB",
+        "PTS+(gte(T,0.2)+gte(T,0.4)+gte(T,0.6))*201/TB",
+    ],
+)
+def test_normalization_refuses_aggregate_interior_padding_before_pcm(
+    ffmpeg: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expression: str
+) -> None:
+    from lectern.ingest import IngestError
+
+    media = _tiny_timestamp_fixture(ffmpeg, tmp_path, f"asetpts='{expression}'")
+    output = tmp_path / "normalized.wav"
+    real_run = subprocess.run
+
+    def no_pcm(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if "aresample=async=1:first_pts=0" in args:
+            pytest.fail("padding preflight admitted an over-budget interior gap")
+        return cast(subprocess.CompletedProcess[str], real_run(args, **kwargs))
+
+    monkeypatch.setattr(subprocess, "run", no_pcm)
+    with pytest.raises(IngestError, match="padding.*600"):
+        _normalize_to_canonical_wav(media, output)
+    assert not output.exists()
+    assert not output.with_suffix(".tmp.wav").exists()
+
+
+def test_normalization_preserves_small_interior_gap(ffmpeg: str, tmp_path: Path) -> None:
+    media = _tiny_timestamp_fixture(ffmpeg, tmp_path, "asetpts='PTS+gte(T,0.5)*2/TB'")
+    output = tmp_path / "normalized.wav"
+    _normalize_to_canonical_wav(media, output)
+    _, duration = _wav_times(output)
+    assert math.isclose(duration, 3, abs_tol=0.001)
+
+
+@pytest.mark.parametrize("delay", [2, 601])
+def test_analysis_and_normalization_select_actual_default_second_audio(
+    ffmpeg: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, delay: int
+) -> None:
+    from lectern.ingest import IngestError
+
+    media = tmp_path / "default-second.mkv"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=s=16x16:r=5:d=4",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=220:sample_rate=16000:duration=1",
+            "-itsoffset",
+            str(delay),
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=16000:duration=1",
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-map",
+            "2:a",
+            "-c:v",
+            "mpeg4",
+            "-threads",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            "-disposition:a:0",
+            "0",
+            "-disposition:a:1",
+            "default",
+            str(media),
+        ],
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    output = tmp_path / "normalized.wav"
+    if delay == 601:
+
+        def no_normalization(*args: object, **kwargs: object) -> None:
+            pytest.fail("default second stream bypassed the padding guard")
+
+        monkeypatch.setattr(subprocess, "run", no_normalization)
+        with pytest.raises(IngestError, match="padding.*600"):
+            _normalize_to_canonical_wav(media, output)
+        assert not output.exists()
+        assert not output.with_suffix(".tmp.wav").exists()
+    else:
+        _normalize_to_canonical_wav(media, output)
+        onset, duration = _wav_times(output)
+        # Safe a:0 would produce one second at zero. Actual default a:1 gives 3s.
+        assert math.isclose(onset, 2, abs_tol=0.001)
+        assert math.isclose(duration, 3, abs_tol=0.001)
+
+
+@pytest.mark.parametrize("rate", [44100, 48000])
+def test_sample_clock_handles_actual_noncanonical_rate_and_timestamp_jitter(
+    ffmpeg: str, tmp_path: Path, rate: int
+) -> None:
+    media = tmp_path / "jitter.mkv"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=sample_rate={rate}:duration=2",
+            "-af",
+            "asetpts='PTS+mod(N,2048)/1024*0.02/TB+gte(T,1)*2/TB'",
+            "-c:a",
+            "pcm_s16le",
+            "-threads",
+            "1",
+            str(media),
+        ],
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    output = tmp_path / "normalized.wav"
+    _normalize_to_canonical_wav(media, output)
+    _, duration = _wav_times(output)
+    assert math.isclose(duration, 4, abs_tol=0.025)

@@ -19,11 +19,15 @@ versioned release notes will become stricter once preview support stabilizes.
   changing citation validity, exit codes, or the plain summary line (#95).
 - Preserved source-container audio offsets during normalization so transcript
   times align with video (#84, part: audio timeline).
-- Bound initial normalization silence to 600 seconds using a timed, limited
-  `ffprobe` decoded-timestamp preflight. Non-canonical audio now requires
-  `ffprobe`; unknown or excessive initial offsets are refused before PCM output.
-  Canonical WAV copy and ordinary delayed audio are preserved. General duration
-  and interior timestamp-gap expansion remain outside this guard (#84).
+- Bound aggregate leading/interior normalization silence to 600 seconds using an
+  uncompensated, streaming FFmpeg decoded-frame analysis through EOF. It has a
+  60-second whole-pass deadline, bounded records/memory, exact per-run tagged
+  timing, and refuses indeterminate rate/reinit/backward/overlap configurations
+  before PCM output. This supersedes the initial-only, 64-packet `ffprobe` guard;
+  audio normalization no longer requires `ffprobe`. Canonical WAV copy, bounded
+  timestamp jitter, and ordinary delayed/gapped audio are preserved. General
+  decoded-duration expansion and hostile-decoder isolation remain outside this
+  guard (#84).
 - Refuse ingest replays of damaged owned bundles before provenance repair (#82).
   Queue and one-shot replay now share artifact, completed-stage, and strict
   selected-transcript admission checks; provenance-only recovery is checked again

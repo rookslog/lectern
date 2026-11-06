@@ -1,12 +1,14 @@
-"""Bounded synthetic preflight tests: never render an oversized offset."""
+"""Bounded frame-stream tests: large timelines never produce PCM."""
 
 from __future__ import annotations
 
 import json
 import shutil
 import subprocess
+import sys
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, BinaryIO, cast
+from typing import Any, cast
 
 import pytest
 
@@ -16,142 +18,222 @@ from lectern.ingest import IngestError, ingest_local
 FIXTURE = Path(__file__).parent / "fixtures/synthetic_talk.wav"
 
 
-def _probe(pts: object = "0", start: object = "0") -> dict[str, object]:
-    return {
-        "streams": [{"index": 0, "start_time": "0"}],
-        "frames": [{"stream_index": 0, "pts_time": pts}],
-        "format": {"start_time": start},
-    }
+def _frame(
+    n: int, pts: int, samples: int = 16000, rate: int = 16000, *, pointer: str = "0x123"
+) -> str:
+    return (
+        f"[ashowinfo@TAG @ {pointer}] n:{n} pts:{pts} pts_time:{pts / rate:g} "
+        f"fmt:s16 channels:1 chlayout:mono rate:{rate} nb_samples:{samples} "
+        "checksum:1234ABCD plane_checksums: [ 1234ABCD ]\n"
+    )
 
 
-def _run_ingest(
-    tmp_path: Path,
+@pytest.fixture
+def analyzer(
     monkeypatch: pytest.MonkeyPatch,
-    payload: object,
-    *,
-    rejected: bool,
-    failure: str | None = None,
-) -> None:
+) -> Iterator[tuple[list[str], list[subprocess.Popen[bytes]]]]:
+    """Fake FFmpeg at the process boundary; exercise real pipes/deadlines/reaping."""
+    lines: list[str] = []
+    children: list[subprocess.Popen[bytes]] = []
+    real_popen = subprocess.Popen
+
+    def launch(args: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        assert args[args.index("-af") + 1].startswith("asettb=expr=1/sr,ashowinfo@")
+        assert not any("aresample" in arg for arg in args)
+        assert args[-3:] == ["-f", "null", "-"]
+        assert "-map" not in args and "-copyts" not in args
+        assert all(flag in args for flag in ("-vn", "-sn", "-dn", "-nostdin"))
+        tag = args[args.index("-af") + 1].split("ashowinfo@", 1)[1]
+        script = (
+            "import json, os, sys, time\n"
+            "for line in json.loads(sys.argv[1]):\n"
+            " if line == 'SLEEP': time.sleep(30)\n"
+            " elif line == 'LONG_JITTER':\n"
+            "  template = sys.argv[3].replace('TAG', sys.argv[2])\n"
+            "  for i in range(72001):\n"
+            "   pts = i*16000 + (320 if i%2 else 0)\n"
+            "   text = template.replace('n:0', f'n:{i}').replace('pts:0', f'pts:{pts}')\n"
+            "   os.write(2, text.encode())\n"
+            " elif line == 'EXIT': sys.exit(1)\n"
+            " elif line == 'CLOSE': os.close(2); time.sleep(30)\n"
+            " else: os.write(2, line.replace('TAG', sys.argv[2]).encode())\n"
+        )
+        child = cast(
+            "subprocess.Popen[bytes]",
+            real_popen(
+                [sys.executable, "-u", "-c", script, json.dumps(lines), tag, _frame(0, 0)], **kwargs
+            ),
+        )
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    yield lines, children
+    assert children, "the full frame analysis must run"
+    assert all(child.poll() is not None for child in children), "analysis child was not reaped"
+    assert all(child.stderr is not None and child.stderr.closed for child in children)
+
+
+def _run_ingest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, rejected: bool) -> None:
     source = tmp_path / "synthetic.bin"
     source.write_bytes(b"synthetic noncanonical source")
     source.with_suffix(".transcript.txt").write_text("Synthetic transcript.")
-    calls: list[str] = []
+    normalizations: list[str] = []
 
     def run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        binary = Path(args[0]).name
-        calls.append(binary)
-        if binary == "ffprobe":
-            assert kwargs["timeout"] == 10
-            assert args[args.index("-read_intervals") + 1] == "%+#64"
-            assert "frame=stream_index,pts_time:stream=index:format=start_time" in args
-            if failure == "timeout":
-                raise subprocess.TimeoutExpired(args, 10)
-            if failure == "oserror":
-                raise OSError("synthetic probe failure")
-            stdout = cast(BinaryIO, kwargs["stdout"])
-            stdout.write(payload if isinstance(payload, bytes) else json.dumps(payload).encode())
-            return subprocess.CompletedProcess(args, 1 if failure == "exit" else 0, "", "")
-        assert binary == "ffmpeg"
-        assert not rejected, "ffmpeg must not run for refused padding"
+        normalizations.append(args[-1])
+        assert not rejected, "over-budget/indeterminate audio reached PCM normalization"
         shutil.copyfile(FIXTURE, args[-1])
         return subprocess.CompletedProcess(args, 0, "", "")
 
     def binary_path(name: str) -> str:
-        return f"/synthetic/{name}"
+        assert name == "ffmpeg", "normalization must not require ffprobe"
+        return "/synthetic/ffmpeg"
 
     monkeypatch.setattr(ingest_module.shutil, "which", binary_path)
-    monkeypatch.setattr(ingest_module.subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "run", run)
     bundles = tmp_path / "bundles"
     if rejected:
-        with pytest.raises(IngestError, match="initial audio|ffprobe"):
+        with pytest.raises(IngestError, match="audio (padding|timing)") as error:
             ingest_local(source, bundles)
-        assert calls == ["ffprobe"]
+        assert "private" not in str(error.value)
+        assert "ashowinfo" not in str(error.value)
+        assert "lectern_" not in str(error.value)
+        assert normalizations == []
         assert list(bundles.iterdir()) == []
         assert not list(tmp_path.rglob("*.tmp.wav"))
     else:
         result = ingest_local(source, bundles)
         assert (result.bundle_dir / "media/audio.wav").read_bytes() == FIXTURE.read_bytes()
-        assert calls == ["ffprobe", "ffmpeg"]
+        assert len(normalizations) == 1
 
 
 @pytest.mark.parametrize(
-    ("pts", "start"),
+    "records",
     [
-        ("0", "0"),
-        ("2.4", "0"),
-        ("599.999", "0"),
-        ("600", "0"),
-        ("610", "10"),
-        ("590", "-10"),
-        ("-2", "0"),
-        ("-8", "-10"),
+        [_frame(0, 0)],
+        [_frame(0, 9600000)],  # exactly 600 seconds initially
+        [_frame(0, 0), _frame(1, 9616000)],  # exactly 600 seconds inside
+        [_frame(0, 0), _frame(1, 4816000), _frame(2, 9632000)],  # 300 + 300
+        [_frame(0, -1024, 1024), _frame(1, 0)],  # negative codec priming
+        [_frame(0, 0), _frame(1, 15999), _frame(2, 32000)],  # tiny overlap
+        [_frame(0, 0), _frame(1, 48000)],  # legitimate two-second gap
+        [_frame(0, 0, 44100, 44100), _frame(1, 88200, 44100, 44100)],
     ],
 )
-def test_padding_accepts_finite_offsets_through_600_seconds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pts: str, start: str
+def test_accepts_budget_boundary_and_accountable_timing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    analyzer: tuple[list[str], list[subprocess.Popen[bytes]]],
+    records: list[str],
 ) -> None:
-    _run_ingest(tmp_path, monkeypatch, _probe(pts, start), rejected=False)
+    analyzer[0].extend(records)
+    _run_ingest(tmp_path, monkeypatch, rejected=False)
+
+
+def test_accepts_old_ffmpeg_packet_position_field(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    analyzer: tuple[list[str], list[subprocess.Popen[bytes]]],
+) -> None:
+    # FFmpeg 5.1 emitted pkt_pos between pts_time and fmt; 6.1 removed it.
+    analyzer[0].extend(
+        [
+            _frame(0, 0).replace("fmt:", "pos:-1 fmt:"),
+            _frame(1, 16000).replace("fmt:", "pos:4096 fmt:"),
+        ]
+    )
+    _run_ingest(tmp_path, monkeypatch, rejected=False)
 
 
 @pytest.mark.parametrize(
-    "payload",
+    "records",
     [
-        _probe("600.001"),
-        _probe("601", "0"),
-        _probe("591", "-10"),
-        _probe("611", "10"),
-        _probe("NaN"),
-        _probe("inf"),
-        _probe("-inf"),
-        _probe(None),
-        _probe("invalid"),
-        _probe("0", "NaN"),
-        _probe("0", "inf"),
-        _probe("0", None),
-        _probe("0", "invalid"),
-        {},
+        [_frame(0, 9600001)],  # one native sample above 600 seconds
+        [_frame(0, 0), _frame(1, 9616001)],
+        [_frame(0, 0), _frame(1, 4832000), _frame(2, 9664000)],  # 301 + 301
+        [*[_frame(i, i * 16000) for i in range(70)], _frame(70, 10736000)],
+        [_frame(0, 0), _frame(1, 0)],  # one second overlap
+        [_frame(0, 0), _frame(1, -1)],  # backward PTS
+        [_frame(0, 0), _frame(1, 16000, 48000, 48000)],  # changed rate
+        [_frame(0, 0), _frame(0, 16000)],  # filter reinit/reset
+        [_frame(0, 0), _frame(1, 16000, pointer="0x456")],
+        [_frame(0, 0), _frame(2, 16000)],  # dropped tagged record
+        [_frame(0, 0).replace("fmt:s16", "fmt:fltp"), _frame(1, 16000)],
+    ],
+)
+def test_refuses_aggregate_or_indeterminate_timing_before_pcm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    analyzer: tuple[list[str], list[subprocess.Popen[bytes]]],
+    records: list[str],
+) -> None:
+    analyzer[0].extend(records)
+    _run_ingest(tmp_path, monkeypatch, rejected=True)
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
         [],
-        {"streams": [{"index": 0}], "frames": [], "format": {"start_time": "0"}},
-        {"streams": [{"index": 0}], "frames": [{"stream_index": 0}], "format": {"start_time": "0"}},
-        {
-            "streams": [{"index": 0}],
-            "frames": [{"stream_index": 0, "pts_time": "0"}],
-            "no_format": {},
-        },
-        {
-            "streams": [{"index": 0}, {"index": 1}],
-            "frames": [{"stream_index": 0, "pts_time": "0"}],
-            "format": {"start_time": "0"},
-        },
-        {
-            "streams": [{"index": 0}, {"index": 1}],
-            "frames": [
-                {"stream_index": 0, "pts_time": "0"},
-                {"stream_index": 1, "pts_time": "601"},
-            ],
-            "format": {"start_time": "0"},
-        },
-        b"invalid JSON",
-        b" " * 65537,
+        ["private diagnostics must not escape\n"],
+        [_frame(0, 0).replace("TAG", "forged_static_tag")],
+        [_frame(0, 0).replace("ashowinfo@TAG", "Parsed_ashowinfo_0")],
+        [_frame(0, 0).replace("pts:0", "pts:NOPTS")],
+        [_frame(0, 0).replace("rate:16000", "rate:0")],
+        [_frame(0, 0, 0)],
+        [_frame(0, 0, -1)],
+        [_frame(0, 0).replace("pts:0", "pts:" + "9" * 100)],
+        ["[ashowinfo@TAG @ 0x123] n:0 malformed private record\n"],
+        ["x" * 4097],
+        ["x" * 4097 + "\n"],
+        [_frame(0, 0), "EXIT"],
+        [_frame(0, 0), "SLEEP"],
+        [_frame(0, 0), "CLOSE"],
     ],
-    ids=lambda payload: (
-        "oversized-json" if isinstance(payload, bytes) and len(payload) > 65536 else None
-    ),
 )
-def test_padding_refuses_unknown_or_oversized_offset_before_ffmpeg(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: object
+def test_rejects_malformed_forged_missing_failed_or_stalled_analysis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    analyzer: tuple[list[str], list[subprocess.Popen[bytes]]],
+    records: list[str],
 ) -> None:
-    _run_ingest(tmp_path, monkeypatch, payload, rejected=True)
+    from lectern import audio_timing
+
+    monkeypatch.setattr(audio_timing, "ANALYSIS_TIMEOUT_S", 0.2)
+    analyzer[0].extend(records)
+    _run_ingest(tmp_path, monkeypatch, rejected=True)
 
 
-@pytest.mark.parametrize("failure", ["exit", "timeout", "oserror"])
-def test_padding_probe_failures_refuse_before_ffmpeg(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+def test_long_continuous_jitter_does_not_accumulate_per_frame_padding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    analyzer: tuple[list[str], list[subprocess.Popen[bytes]]],
 ) -> None:
-    _run_ingest(tmp_path, monkeypatch, _probe(), rejected=True, failure=failure)
+    # Twenty hours; naive positive adjacent-delta sums would charge 720 seconds.
+    analyzer[0].append("LONG_JITTER")
+    _run_ingest(tmp_path, monkeypatch, rejected=False)
 
 
-def test_canonical_wav_copy_needs_no_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_untagged_forgery_cannot_mask_later_real_gap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    analyzer: tuple[list[str], list[subprocess.Popen[bytes]]],
+) -> None:
+    analyzer[0].extend(
+        [
+            _frame(0, 0),
+            _frame(1, 16000).replace("TAG", "generic_forgery"),
+            _frame(1, 9632000),
+            "SLEEP",
+        ]
+    )
+    _run_ingest(tmp_path, monkeypatch, rejected=True)
+
+
+def test_canonical_wav_copy_needs_no_analysis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def missing_binary(name: str) -> None:
         return None
 
@@ -160,34 +242,40 @@ def test_canonical_wav_copy_needs_no_probe(tmp_path: Path, monkeypatch: pytest.M
     assert (result.bundle_dir / "media/audio.wav").read_bytes() == FIXTURE.read_bytes()
 
 
-def test_noncanonical_audio_requires_ffprobe(
+def test_analysis_spawn_failure_prevents_pcm(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source = tmp_path / "synthetic.bin"
-    source.write_bytes(b"synthetic noncanonical source")
+    def unavailable(*args: object, **kwargs: object) -> None:
+        raise OSError("private process diagnostic")
 
-    def only_ffmpeg(name: str) -> str | None:
-        return "/synthetic/ffmpeg" if name == "ffmpeg" else None
-
-    monkeypatch.setattr(ingest_module.shutil, "which", only_ffmpeg)
-    with pytest.raises(IngestError, match="ffprobe is required"):
-        ingest_module._normalize_to_canonical_wav(source, tmp_path / "audio.wav")  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(subprocess, "Popen", unavailable)
+    _run_ingest(tmp_path, monkeypatch, rejected=True)
 
 
-def test_absent_container_start_uses_ffmpeg_zero_origin(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_read_error_reaps_and_closes_analysis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    analyzer: tuple[list[str], list[subprocess.Popen[bytes]]],
 ) -> None:
-    payload = _probe()
-    payload["format"] = {}
-    _run_ingest(tmp_path, monkeypatch, payload, rejected=False)
+    from lectern import audio_timing
+
+    real_read = audio_timing.os.read
+    analyzer[0].extend([_frame(0, 0), "SLEEP"])
+
+    def unreadable(fd: int, count: int) -> bytes:
+        pipe = analyzer[1][-1].stderr if analyzer[1] else None
+        if pipe is not None and fd == pipe.fileno():
+            raise OSError("private diagnostic")
+        return real_read(fd, count)
+
+    monkeypatch.setattr(audio_timing.os, "read", unreadable)
+    _run_ingest(tmp_path, monkeypatch, rejected=True)
 
 
-def test_all_audio_streams_checked_without_changing_stream_selection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_maximum_sized_diagnostic_and_unterminated_final_frame(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    analyzer: tuple[list[str], list[subprocess.Popen[bytes]]],
 ) -> None:
-    payload = {
-        "streams": [{"index": 0}, {"index": 2}],
-        "frames": [{"stream_index": 2, "pts_time": "3"}, {"stream_index": 0, "pts_time": "2"}],
-        "format": {"start_time": "0"},
-    }
-    _run_ingest(tmp_path, monkeypatch, payload, rejected=False)
+    analyzer[0].extend(["x" * 4096 + "\n", _frame(0, 0).rstrip("\n")])
+    _run_ingest(tmp_path, monkeypatch, rejected=False)
