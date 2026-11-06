@@ -21,6 +21,17 @@ versioned release notes will become stricter once preview support stabilizes.
   report oversized numeric tokens as malformed (#94). Citation checks now show
   uncited paragraph locations/excerpts and pasteable time corrections without
   changing citation validity, exit codes, or the plain summary line (#95).
+- Preserved source-container audio offsets during normalization so transcript
+  times align with video (#84, part: audio timeline).
+- Bound aggregate leading/interior normalization silence to 600 seconds using an
+  uncompensated, streaming FFmpeg decoded-frame analysis through EOF. It has a
+  60-second whole-pass deadline, bounded records/memory, exact per-run tagged
+  timing, and refuses indeterminate rate/reinit/backward/overlap configurations
+  before PCM output. This supersedes the initial-only, 64-packet `ffprobe` guard;
+  audio normalization no longer requires `ffprobe`. Canonical WAV copy, bounded
+  timestamp jitter, and ordinary delayed/gapped audio are preserved. General
+  decoded-duration expansion and hostile-decoder isolation remain outside this
+  guard (#84).
 - Refuse ingest replays of damaged owned bundles before provenance repair (#82).
   Queue and one-shot replay now share artifact, completed-stage, and strict
   selected-transcript admission checks; provenance-only recovery is checked again

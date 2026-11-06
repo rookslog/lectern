@@ -35,6 +35,8 @@ this document plans but does not yet implement.
 | situate | planned, not implemented | transcript + references | contextual notes for synthesis | Positions the source in relation to resolved references and prior bundle context. |
 | synthesize | partially implemented | bundle artifacts | `analysis/summary.md` (implemented as an overview card); `analysis/claims.md`, `analysis/questions.md` (planned) | The overview card records title, duration, transcript method, counts and time span. Lectern does not summarize; summaries are left to agents citing transcript anchors. |
 
+Normalization preserves audio offsets so transcript times are on the source container's timeline.
+
 The bundle layout below shows the full planned layout, including the paths the
 unimplemented stages would write; the current preview produces only the
 artifacts of the implemented stages.
