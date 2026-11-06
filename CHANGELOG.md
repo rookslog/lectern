@@ -5,6 +5,14 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Fixed timed-caption/local-ASR follow-ups (#89): preserve ordinary repeated
+  VTT cues while de-duplicating rolling captions; bind derived language/method
+  to language-tagged caption approvals; preserve Hub model IDs while redacting
+  local paths; refuse cached-only local models missing `tokenizer.json`; and
+  retain faster-whisper's effective language with a warning when it differs
+  from `--language`. Existing approvals for language-bearing captions change
+  once and require a rescan and approval before ingest; untagged-sidecar
+  approval digests are unchanged. Command/sidecar language overrides still apply.
 - Raised the writer's manifest schema to `1.1.0` for optional transcript
   language/ASR backend metadata, `source.external`, and stage warnings. Readers
   accept both `1.0.0` and `1.1.0` without migration and refuse other versions,
