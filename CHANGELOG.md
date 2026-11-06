@@ -5,6 +5,10 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Fixed packet citation round-trips for migrated IDs and negative times, and
+  report oversized numeric tokens as malformed (#94). Citation checks now show
+  uncited paragraph locations/excerpts and pasteable time corrections without
+  changing citation validity, exit codes, or the plain summary line (#95).
 - Raised the writer's manifest schema to `1.1.0` for optional transcript
   language/ASR backend metadata, `source.external`, and stage warnings. Readers
   accept both `1.0.0` and `1.1.0` without migration and refuse other versions,
