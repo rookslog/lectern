@@ -35,6 +35,7 @@ from lectern.integrity import (
 from lectern.integrity import (
     materialized_stage_states,
 )
+from lectern.marks import bind_mark, parse_mark
 from lectern.records import (
     LEGAL_QUEUE_TRANSITION_SOURCE_VALUES,
     LEGAL_QUEUE_TRANSITION_SOURCES,
@@ -590,13 +591,19 @@ class AutomationStateStore:
         if version == 0:
             self._create_schema_v2()
             self._create_schema_v3()
+            self._create_schema_v4()
             return
         if version == 1:
             self._migrate_v1_to_v2()
             self._create_schema_v3()
+            self._create_schema_v4()
             return
         if version == 2:
             self._create_schema_v3()
+            self._create_schema_v4()
+            return
+        if version == 3:
+            self._create_schema_v4()
             return
         raise AutomationError(
             f"unsupported automation state schema {version}; expected {STATE_SCHEMA_VERSION}"
@@ -714,8 +721,96 @@ class AutomationStateStore:
             )
         self._write_index_signature()
         self._backfill_segment_index()
-        self._connection.execute(f"PRAGMA user_version = {STATE_SCHEMA_VERSION}")
+        # Stamp only the migration just completed, including after interruption.
+        self._connection.execute("PRAGMA user_version = 3")
         self._connection.commit()
+
+    def _create_schema_v4(self) -> None:
+        """Marks follow the versioned additive-table pattern used by the index."""
+
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS marks (
+                bundle_id TEXT NOT NULL REFERENCES library_bundles(bundle_id) ON DELETE CASCADE,
+                mark_id TEXT NOT NULL,
+                t_s REAL NOT NULL,
+                kind TEXT CHECK (kind IN ('question', 'important', 'follow_up')),
+                text TEXT NOT NULL,
+                binding TEXT NOT NULL CHECK (binding IN ('exact', 'nearest', 'none')),
+                segment_id INTEGER,
+                start_s REAL,
+                text_sha256 TEXT,
+                canon_version INTEGER,
+                import_name TEXT NOT NULL,
+                line_no INTEGER NOT NULL,
+                imported_at TEXT NOT NULL,
+                PRIMARY KEY (bundle_id, mark_id)
+            )
+            """
+        )
+        self._connection.execute("PRAGMA user_version = 4")
+        self._connection.commit()
+
+    def import_marks(self, bundle_id: str, text: str, import_name: str) -> dict[str, Any]:
+        """Import valid lines atomically; retain each malformed line's location/reason."""
+
+        evidence = self.get_library_evidence(bundle_id, require_ready=True)
+        duration_s = evidence.source.source.duration_s
+        added = already_present = 0
+        errors: list[dict[str, Any]] = []
+        imported_at = now_timestamp()
+        # Strip a BOM only at the beginning of the file, not on arbitrary lines.
+        with self._connection:
+            for line_no, line in enumerate(text.removeprefix("\ufeff").splitlines(), 1):
+                try:
+                    parsed = parse_mark(line, duration_s)
+                except ValueError as exc:
+                    errors.append({"line_no": line_no, "reason": str(exc)})
+                    continue
+                if parsed is None:
+                    continue
+                mark = {
+                    **bind_mark(bundle_id, parsed, evidence.segments.root),
+                    "import_name": Path(import_name).name,
+                    "line_no": line_no,
+                    "imported_at": imported_at,
+                }
+                cursor = self._connection.execute(
+                    """
+                    INSERT INTO marks (
+                        bundle_id, mark_id, t_s, kind, text, binding, segment_id,
+                        start_s, text_sha256, canon_version, import_name, line_no, imported_at
+                    ) VALUES (
+                        :bundle_id, :mark_id, :t_s, :kind, :text, :binding, :segment_id,
+                        :start_s, :text_sha256, :canon_version, :import_name, :line_no, :imported_at
+                    ) ON CONFLICT(bundle_id, mark_id) DO NOTHING
+                    """,
+                    mark,
+                )
+                if cursor.rowcount:
+                    added += 1
+                else:
+                    already_present += 1
+        return {
+            "added": added,
+            "already_present": already_present,
+            "malformed": len(errors),
+            "errors": errors,
+        }
+
+    def list_marks(self, bundle_id: str, *, require_ready: bool = True) -> list[dict[str, Any]]:
+        """Return stored fields; already-validated packet reads avoid rehashing media."""
+
+        if require_ready:
+            bundle = self.get_library_bundle(bundle_id)
+            if bundle.status is not LibraryStatus.READY:
+                raise AutomationError(
+                    f"bundle {bundle_id} is {bundle.status.value}; requires ready"
+                )
+        rows = self._connection.execute(
+            "SELECT * FROM marks WHERE bundle_id = ? ORDER BY t_s, mark_id", (bundle_id,)
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def _write_index_signature(self) -> None:
         signature = index_signature()
@@ -1425,11 +1520,11 @@ class AutomationStateStore:
         return _library_bundle_from_row(existing)
 
 
-STATE_SCHEMA_VERSION = 3
+STATE_SCHEMA_VERSION = 4
 
 DEFAULT_STATE_PATH = Path(".lectern") / "state.sqlite"
 
-UPGRADABLE_STATE_SCHEMA_VERSIONS = frozenset({0, 1, 2, STATE_SCHEMA_VERSION})
+UPGRADABLE_STATE_SCHEMA_VERSIONS = frozenset({0, 1, 2, 3, STATE_SCHEMA_VERSION})
 
 
 @dataclass(frozen=True)

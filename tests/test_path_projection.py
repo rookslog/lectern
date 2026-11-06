@@ -45,6 +45,8 @@ OUTWARD_COMMANDS = (
     "library show",
     "library search",
     "library cite",
+    "marks import",
+    "marks list",
     "transcript",
     "export",
     "check-citations",
@@ -466,3 +468,26 @@ def test_source_scan_errors_project_stored_paths(
     assert captured.err.startswith("sources: ")
     _assert_no_path(captured.err, folder, "sources scan error")
     assert PATH_REDACTED in captured.err
+
+
+@pytest.mark.parametrize("json_output", [False, True], ids=["plain", "json"])
+def test_marks_import_and_list_project_paths(
+    registered: tuple[Path, Path, Path], capsys: CaptureFixture[str], json_output: bool
+) -> None:
+    tmp_path, folder, state_path = registered
+    listing = _ingest_one(tmp_path, state_path, capsys)
+    bundle_id = json.loads(listing)["bundles"][0]["bundle_id"]
+    notes = folder / "notes.txt"
+    notes.write_text(f"00:00 ? inspect {folder / 'private.txt'}\n")
+    args = ["--state", str(state_path)] + (["--json"] if json_output else [])
+    assert cli.main(["marks", "import", bundle_id, str(notes), *args]) == 0
+    captured = capsys.readouterr()
+    _assert_no_path(captured.out + captured.err, folder, "marks import")
+    assert cli.main(["marks", "list", bundle_id, *args]) == 0
+    captured = capsys.readouterr()
+    _assert_no_path(captured.out + captured.err, folder, "marks list")
+    assert PATH_REDACTED in captured.out
+    notes.unlink()
+    assert cli.main(["marks", "import", bundle_id, str(notes), *args]) == 1
+    captured = capsys.readouterr()
+    _assert_no_path(captured.out + captured.err, folder, "marks import error")

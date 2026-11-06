@@ -72,6 +72,9 @@ and resumability stay centralized.
 
 ## Architecture
 
+Lectern stores the time-bound listening gesture; its meaning, answers, and
+semantic connections belong outside Lectern, in Scholia.
+
 - The portable core is Python-first: bundle management, schemas, CLI entry
   points, and stage orchestration live in the package.
 - Local automation state is SQLite-backed. Source registry, discovery queue,

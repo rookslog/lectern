@@ -18,6 +18,10 @@ versioned release notes will become stricter once preview support stabilizes.
   doctor reports the optional backend and default models without affecting its
   exit code. Unrequested diarization is explicitly skipped.
 
+- Added experimental S5 listening marks: idempotent UTF-8 import and listing,
+  exact/nearby transcript binding, and marks in JSON/Markdown agent packets.
+  Marks stay in local state, not bundle evidence; following the retrieval-index
+  migration pattern, automation state advances from schema 3 to 4.
 - Fixed timed-caption/local-ASR follow-ups (#89): preserve ordinary repeated
   VTT cues while de-duplicating rolling captions; bind derived language/method
   to language-tagged caption approvals; preserve Hub model IDs while redacting
