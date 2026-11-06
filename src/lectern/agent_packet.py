@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Any, cast
@@ -86,6 +87,7 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
     }
     if metadata.backend.terms:
         layers["transcript"]["terms"] = [redact_paths(term) for term in metadata.backend.terms]
+        layers["transcript"]["terms_applied"] = metadata.backend.terms_applied
     for name, stage in (("visual", StageName.VISUAL), ("speakers", StageName.DIARIZE)):
         record = manifest.stages.get(stage)
         present = _stage_done(record) if name == "visual" else speakers_document is not None
@@ -269,7 +271,22 @@ def packet_markdown(packet: dict[str, Any]) -> str:
             path = frame["file"].removeprefix("visual/")
             lines.append(f"{frame['cite']} {path} ({frame['reason']})")
     # Evidence may contain controls/newlines; keep each field on its own row.
-    return "\n".join(" ".join(plain_field(str(line)).split()) for line in lines)
+    rendered = "\n".join(" ".join(plain_field(str(line)).split()) for line in lines)
+    transcript = packet["layers"]["transcript"]
+    if transcript.get("terms"):
+        # JSON list notation preserves order, quoting and within-term spaces.
+        # Do not collapse whitespace in this new evidence field.
+        terms = plain_field(json.dumps(transcript["terms"], ensure_ascii=False))
+        applied = json.dumps(transcript["terms_applied"])
+        disposition = (
+            "passed to transcriber; not a quality or backend-compliance claim"
+            if transcript["terms_applied"]
+            else "not applied to sidecar"
+        )
+        rendered += (
+            f"\n\n## Transcript terms\n\nTerms: {terms}\nTerms applied: {applied} ({disposition})"
+        )
+    return rendered
 
 
 def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:

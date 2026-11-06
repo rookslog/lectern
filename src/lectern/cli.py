@@ -882,6 +882,9 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
         "layers": layers,
         "bundle_dir": redact_paths(bundle.bundle_path),
     }
+    if metadata is not None and metadata.backend.terms:
+        payload["terms"] = [redact_paths(term) for term in metadata.backend.terms]
+        payload["terms_applied"] = metadata.backend.terms_applied
     if json_output:
         _print_json(payload)
     else:
@@ -909,7 +912,12 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
                 if backend.terms_applied
                 else "not applied to sidecar"
             )
-            terms_description = f"Terms: {len(backend.terms or [])} ({disposition})\n"
+            term_list = _plain_search_field(json.dumps(payload["terms"], ensure_ascii=False))
+            terms_description = (
+                f"Terms: {len(backend.terms or [])} ({disposition})\n"
+                f"Term list: {term_list}\n"
+                f"Terms applied: {json.dumps(payload['terms_applied'])}\n"
+            )
         print(
             f"Bundle: {bundle.bundle_id}\n"
             f"Title: {_plain_search_field(title)}\n"

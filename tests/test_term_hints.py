@@ -147,6 +147,72 @@ def test_cli_combines_terms_in_order_and_exports_them(
     assert "Terms: 4 (passed to faster_whisper)" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize("sidecar", [False, True])
+@pytest.mark.parametrize("with_terms", [False, True])
+@pytest.mark.parametrize("view", ["packet_json", "packet_md", "library_json", "library_plain"])
+def test_inspection_preserves_term_list_and_application_without_leaking_paths(
+    tmp_path: Path,
+    whisper_calls: list[str | None],
+    capsys: pytest.CaptureFixture[str],
+    queued: bool,
+    sidecar: bool,
+    with_terms: bool,
+    view: str,
+) -> None:
+    media = _media(tmp_path, ".transcript.txt" if sidecar else None)
+    state_path = tmp_path / "state.sqlite"
+    if queued:
+        with open_state(state_path) as state:
+            source = state.add_local_folder_source("talks", tmp_path)
+            item = state.scan_source(source.id).queued[0]
+            state.approve_queue_item(item.id)
+        args = ["queue", "ingest", item.id]
+    else:
+        args = ["ingest", str(media)]
+    terms = ["Schmitt", "Carl  Schmitt", 'Kelsen "jurist"', "/Users/synthetic/private/name"]
+    if with_terms:
+        for term in terms:
+            args += ["--term", term]
+    args += ["--output", str(tmp_path / "bundles"), "--state", str(state_path)]
+    assert cli.main(args) == 0
+    capsys.readouterr()
+    bundle = next((tmp_path / "bundles").iterdir())
+    backend = _metadata(bundle)["backend"]
+    if with_terms:
+        assert backend["terms"] == terms
+        assert backend["terms_applied"] is (not sidecar)
+    else:
+        assert "terms" not in backend and "terms_applied" not in backend
+
+    command = (
+        ["export", bundle.name, "--format", "json" if view == "packet_json" else "md"]
+        if view.startswith("packet")
+        else ["library", "show", bundle.name] + (["--json"] if view == "library_json" else [])
+    )
+    assert cli.main([*command, "--state", str(state_path)]) == 0
+    output = capsys.readouterr().out
+    assert "/Users/synthetic" not in output
+    projected = ["Schmitt", "Carl  Schmitt", 'Kelsen "jurist"', "<path>"]
+    if view.endswith("json"):
+        payload = json.loads(output)
+        facts = payload["layers"]["transcript"] if view == "packet_json" else payload
+        if with_terms:
+            assert facts["terms"] == projected
+            assert facts["terms_applied"] is (not sidecar)
+        else:
+            assert "terms" not in facts and "terms_applied" not in facts
+    elif with_terms:
+        label = "Terms" if view == "packet_md" else "Term list"
+        assert f"{label}: {json.dumps(projected, ensure_ascii=False)}" in output
+        assert f"Terms applied: {'false' if sidecar else 'true'}" in output
+        assert ("not applied to sidecar" if sidecar else "passed to") in output
+    else:
+        assert "Terms:" not in output
+        assert "Term list:" not in output
+        assert "Terms applied:" not in output
+
+
 def test_command_receives_newline_terms_without_argv_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
