@@ -438,6 +438,8 @@ class TranscriptBackend(ArtifactModel):
     compute_type: str | None = None
     detected_language: str | None = None
     language_probability: FiniteFloat | None = None
+    terms: list[str] | None = None
+    terms_applied: bool | None = None
 
     model_config = {"extra": "forbid"}
 

@@ -72,6 +72,8 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
             "segment_count": len(evidence.segments.root),
         }
     }
+    if metadata.backend.terms:
+        layers["transcript"]["terms"] = [redact_paths(term) for term in metadata.backend.terms]
     for name, stage in (("visual", StageName.VISUAL), ("speakers", StageName.DIARIZE)):
         record = manifest.stages.get(stage)
         present = _stage_done(record)

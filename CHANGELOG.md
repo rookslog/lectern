@@ -5,6 +5,10 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Added user-supplied named-term hints for one-shot and queued ingest (#65),
+  following #64's pass-through/no-quality-claim boundary: faster-whisper
+  `hotwords`, command `LECTERN_TERMS`, exact term provenance and bundle identity,
+  explicit sidecar non-application, and library/packet inspection.
 - Fixed timed-caption/local-ASR follow-ups (#89): preserve ordinary repeated
   VTT cues while de-duplicating rolling captions; bind derived language/method
   to language-tagged caption approvals; preserve Hub model IDs while redacting

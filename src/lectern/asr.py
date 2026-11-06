@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import re
 import wave
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -30,7 +30,9 @@ class ASRResult:
 
 
 class ASRBackend(Protocol):
-    def transcribe(self, audio: Path, *, language: str | None = None) -> ASRResult: ...
+    def transcribe(
+        self, audio: Path, *, language: str | None = None, terms: Sequence[str] = ()
+    ) -> ASRResult: ...
 
 
 class _WhisperSegment(Protocol):
@@ -46,7 +48,7 @@ class _WhisperInfo(Protocol):
 
 class _WhisperModel(Protocol):
     def transcribe(
-        self, audio: object, *, language: str | None
+        self, audio: object, *, language: str | None, hotwords: str | None = None
     ) -> tuple[Iterable[_WhisperSegment], _WhisperInfo]: ...
 
 
@@ -115,11 +117,19 @@ class FasterWhisperBackend:
         except PackageNotFoundError:
             self.library_version = None
 
-    def transcribe(self, audio: Path, *, language: str | None = None) -> ASRResult:
+    def transcribe(
+        self, audio: Path, *, language: str | None = None, terms: Sequence[str] = ()
+    ) -> ASRResult:
         # Hand faster-whisper decoded samples, not a path: its own decoder calls
         # PyAV with an argument PyAV 19 removed, and Lectern's normalized audio is
         # already 16 kHz mono 16-bit PCM, which is exactly what the model expects.
-        segments, info = self._model.transcribe(_pcm16_mono_samples(audio), language=language)
+        samples = _pcm16_mono_samples(audio)
+        if terms:
+            segments, info = self._model.transcribe(
+                samples, language=language, hotwords=" ".join(terms)
+            )
+        else:
+            segments, info = self._model.transcribe(samples, language=language)
         return ASRResult(
             segments=tuple(
                 ASRSegment(segment.start, segment.end, segment.text.strip())
