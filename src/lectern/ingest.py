@@ -53,6 +53,7 @@ from lectern.sources.local import (
     info_sidecar_path,
     transcript_sidecar_path,
 )
+from lectern.terms import normalize_terms
 
 CANONICAL_SAMPLE_RATE = 16_000
 CANONICAL_CHANNELS = 1
@@ -145,6 +146,7 @@ class PreparedLocalIngest:
     _asr_model: str
     _allow_model_download: bool
     _language: str | None
+    _terms: tuple[str, ...]
     _frames: bool
     _frame_interval: float
     _max_frames: int
@@ -161,6 +163,7 @@ class PreparedLocalIngest:
             ),
             self._language,
         )
+        transcript = _with_terms(transcript, self._terms, applied=False)
         digest = self._bundle_digest(transcript)
         return f"{_slug(self.original_path.stem)}-{digest[:12]}"
 
@@ -202,7 +205,9 @@ class PreparedLocalIngest:
 
             if self._command is not None:
                 transcript = _with_language(
-                    _transcribe_with_local_command(self._command, audio_path, source_duration),
+                    _transcribe_with_local_command(
+                        self._command, audio_path, source_duration, terms=self._terms
+                    ),
                     self._language,
                 )
             elif self._sidecar_payload is not None:
@@ -215,12 +220,19 @@ class PreparedLocalIngest:
                     ),
                     self._language,
                 )
+                transcript = _with_terms(transcript, self._terms, applied=False)
+                if self._terms:
+                    print(
+                        "ingest: warning: terms do not apply to transcript sidecars",
+                        file=sys.stderr,
+                    )
             else:
                 transcript = _transcribe_with_asr(
                     self._asr_model,
                     audio_path,
                     self._language,
                     allow_model_download=self._allow_model_download,
+                    terms=self._terms,
                 )
 
             speakers_document = None
@@ -359,6 +371,7 @@ def prepare_local_ingest(
     asr_model: str = "small",
     allow_model_download: bool = False,
     language: str | None = None,
+    terms: Sequence[str] = (),
     frames: bool = False,
     frame_interval: float = DEFAULT_FRAME_INTERVAL,
     max_frames: int = DEFAULT_MAX_FRAMES,
@@ -369,9 +382,10 @@ def prepare_local_ingest(
     expected_approval_sha256: str | None,
 ) -> Generator[PreparedLocalIngest]:
     try:
+        normalized_terms = normalize_terms(terms)
         validate_frame_options(frame_interval, max_frames)
         diarization.validate_diarization_options(speakers)
-    except (KeyframeError, diarization.DiarizationError) as exc:
+    except (ValueError, KeyframeError, diarization.DiarizationError) as exc:
         raise IngestError(str(exc)) from exc
     source = source_path.expanduser()
     if not source.is_file():
@@ -422,6 +436,7 @@ def prepare_local_ingest(
             _asr_model=asr_model,
             _allow_model_download=allow_model_download,
             _language=language,
+            _terms=normalized_terms,
             _frames=frames,
             _frame_interval=float(frame_interval),
             _max_frames=max_frames,
@@ -436,6 +451,7 @@ def plan_local_bundle_id(
     transcriber_command: str | None = None,
     *,
     language: str | None = None,
+    terms: Sequence[str] = (),
     frames: bool = False,
     frame_interval: float = DEFAULT_FRAME_INTERVAL,
     max_frames: int = DEFAULT_MAX_FRAMES,
@@ -449,6 +465,7 @@ def plan_local_bundle_id(
         source_path,
         transcriber_command=transcriber_command,
         language=language,
+        terms=terms,
         frames=frames,
         frame_interval=frame_interval,
         max_frames=max_frames,
@@ -488,6 +505,7 @@ def ingest_local(
     asr_model: str = "small",
     allow_model_download: bool = False,
     language: str | None = None,
+    terms: Sequence[str] = (),
     frames: bool = False,
     frame_interval: float = DEFAULT_FRAME_INTERVAL,
     max_frames: int = DEFAULT_MAX_FRAMES,
@@ -501,6 +519,7 @@ def ingest_local(
         asr_model=asr_model,
         allow_model_download=allow_model_download,
         language=language,
+        terms=terms,
         frames=frames,
         frame_interval=frame_interval,
         max_frames=max_frames,
@@ -595,6 +614,19 @@ def _with_language(transcript: TranscriptResult, language: str | None) -> Transc
     )
 
 
+def _with_terms(
+    transcript: TranscriptResult, terms: Sequence[str], *, applied: bool
+) -> TranscriptResult:
+    if not terms:
+        return transcript
+    hints = {"terms": list(terms), "terms_applied": applied}
+    backend = {**transcript.backend, **hints}
+    identity = {**transcript.identity, **hints}
+    if "backend" in identity:
+        identity["backend"] = backend
+    return replace(transcript, backend=backend, identity=identity)
+
+
 _CAPTION_TIME = r"(?:\d{2,}:)?\d{2}:\d{2}[.,]\d{3}"
 _CAPTION_TIMING = re.compile(rf"^({_CAPTION_TIME})\s+-->\s+({_CAPTION_TIME})(?:\s+.*)?$")
 
@@ -657,7 +689,12 @@ def _caption_segments(transcript: str, kind: str) -> tuple[TranscriptSegment, ..
 
 
 def _transcribe_with_asr(
-    model: str, audio: Path, language: str | None, *, allow_model_download: bool = False
+    model: str,
+    audio: Path,
+    language: str | None,
+    *,
+    allow_model_download: bool = False,
+    terms: Sequence[str] = (),
 ) -> TranscriptResult:
     model_path = Path(model).expanduser()
     if (
@@ -681,7 +718,10 @@ def _transcribe_with_asr(
         )
         raise IngestError(f"local ASR initialization failed: {exc}{hint}") from exc
     try:
-        result = backend.transcribe(audio, language=language)
+        if terms:
+            result = backend.transcribe(audio, language=language, terms=terms)
+        else:
+            result = backend.transcribe(audio, language=language)
     except Exception as exc:
         raise IngestError(f"local ASR transcription failed: {exc}") from exc
     segments = tuple(
@@ -704,7 +744,7 @@ def _transcribe_with_asr(
         "detected_language": result.language,
         "language_probability": result.language_probability,
     }
-    return TranscriptResult(
+    transcript = TranscriptResult(
         text="\n".join(segment.text for segment in segments),
         segments=segments,
         method="faster_whisper",
@@ -726,14 +766,22 @@ def _transcribe_with_asr(
         },
         language=result.language,
     )
+    return _with_terms(transcript, terms, applied=True)
 
 
 def _transcribe_with_local_command(
     command: str,
     normalized_audio: Path,
     duration_s: float | None,
+    *,
+    terms: Sequence[str] = (),
 ) -> TranscriptResult:
     argv = _build_transcriber_argv(command, normalized_audio)
+    environment = os.environ.copy()
+    # Do not let an inherited hint silently disagree with recorded provenance.
+    environment.pop("LECTERN_TERMS", None)
+    if terms:
+        environment["LECTERN_TERMS"] = "\n".join(terms)
     try:
         result = subprocess.run(
             argv,
@@ -741,6 +789,7 @@ def _transcribe_with_local_command(
             capture_output=True,
             shell=False,
             timeout=DEFAULT_TRANSCRIBER_TIMEOUT_S,
+            env=environment,
         )
     except FileNotFoundError as exc:
         raise IngestError(f"local transcriber command not found: {argv[0]}") from exc
@@ -767,7 +816,7 @@ def _transcribe_with_local_command(
             sort_keys=True,
         )
     )
-    return TranscriptResult(
+    transcript = TranscriptResult(
         text=transcript_text,
         segments=tuple(segments),
         method="local_command_json",
@@ -792,6 +841,7 @@ def _transcribe_with_local_command(
             "transcript_sha256": transcript_digest,
         },
     )
+    return _with_terms(transcript, terms, applied=True)
 
 
 def _decode_transcriber_pipe(data: bytes, stream_name: str) -> str:

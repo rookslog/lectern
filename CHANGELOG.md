@@ -5,6 +5,18 @@ versioned release notes will become stricter once preview support stabilizes.
 
 ## Unreleased
 
+- Added user-supplied named-term hints for one-shot and queued ingest (#65),
+  following #64's pass-through/no-quality-claim boundary: faster-whisper
+  `hotwords`, command `LECTERN_TERMS`, exact term provenance and bundle identity,
+  explicit sidecar non-application, and library/packet inspection.
+- Preserved recorded term lists and application disposition across packet
+  JSON/Markdown and library-show JSON/readable views, with path redaction and
+  no-term omission. Application means pass-through, not accuracy or backend
+  compliance. Documented ADR-0003's dated scoped preview metadata exception:
+  manifest `1.1.0` and local `metadata.v0` tags stay unchanged; hints-bearing
+  metadata requires updated strict artifact readers, not older readers that
+  reject the added fields. No stable API or general forward compatibility is
+  promised.
 - Fixed export, transcript, and library inspection of bundles without the
   optional diarization stage, preserving ordinary unlabelled transcript reads.
 

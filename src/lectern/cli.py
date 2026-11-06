@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import sys
 from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
 
@@ -33,7 +34,12 @@ from lectern.diarization import (
     DiarizationError,
     validate_diarization_options,
 )
-from lectern.evidence import SelectedEvidence, read_diarization, read_frames
+from lectern.evidence import (
+    SelectedEvidence,
+    read_diarization,
+    read_frames,
+    read_transcript_metadata,
+)
 from lectern.ingest import IngestError
 from lectern.keyframes import (
     DEFAULT_FRAME_INTERVAL,
@@ -46,6 +52,7 @@ from lectern.migrations import MigrationError, migrate_bundle
 from lectern.readable import format_time, source_details
 from lectern.readable import plain_field as _plain_search_field
 from lectern.records import redact_paths
+from lectern.terms import load_terms
 
 # Commands that return stored data to a caller, and therefore must emit no
 # filesystem path in either rendering.
@@ -179,7 +186,8 @@ def _ingest(args: Sequence[str]) -> int:
         print(
             "usage: lectern ingest SOURCE [--output DIR] [--state PATH] "
             "[--transcriber-command COMMAND] [--asr-model NAME] "
-            "[--allow-model-download] [--language CODE] [--frames] "
+            "[--allow-model-download] [--language CODE] [--term NAME] [--terms FILE] "
+            "[--frames] "
             "[--frame-interval SECONDS] [--max-frames N] [--diarize] "
             "[--speakers N] [--diarize-models DIR] [--json]",
             file=sys.stderr,
@@ -194,6 +202,8 @@ def _ingest(args: Sequence[str]) -> int:
     asr_model = "small"
     allow_model_download = False
     language: str | None = None
+    inline_terms: list[str] = []
+    term_files: list[Path] = []
     frames = False
     frame_interval = DEFAULT_FRAME_INTERVAL
     max_frames = DEFAULT_MAX_FRAMES
@@ -247,6 +257,12 @@ def _ingest(args: Sequence[str]) -> int:
         elif token == "--allow-model-download":
             allow_model_download = True
             index += 1
+        elif token == "--term" and index + 1 < len(rest):
+            inline_terms.append(rest[index + 1])
+            index += 2
+        elif token == "--terms" and index + 1 < len(rest):
+            term_files.append(Path(rest[index + 1]))
+            index += 2
         elif token == "--language" and index + 1 < len(rest):
             language = rest[index + 1]
             index += 2
@@ -257,12 +273,19 @@ def _ingest(args: Sequence[str]) -> int:
             print(
                 "usage: lectern ingest SOURCE [--output DIR] [--state PATH] "
                 "[--transcriber-command COMMAND] [--asr-model NAME] "
-                "[--allow-model-download] [--language CODE] [--frames] "
+                "[--allow-model-download] [--language CODE] [--term NAME] [--terms FILE] "
+                "[--frames] "
                 "[--frame-interval SECONDS] [--max-frames N] [--diarize] "
                 "[--speakers N] [--diarize-models DIR] [--json]",
                 file=sys.stderr,
             )
             return 2
+
+    try:
+        terms = load_terms(inline_terms, term_files)
+    except ValueError as exc:
+        print(f"ingest: {exc}", file=sys.stderr)
+        return 2
 
     try:
         with open_state(state_path) as state:
@@ -273,6 +296,7 @@ def _ingest(args: Sequence[str]) -> int:
                 asr_model=asr_model,
                 allow_model_download=allow_model_download,
                 language=language,
+                terms=terms,
                 frames=frames,
                 frame_interval=frame_interval,
                 max_frames=max_frames,
@@ -598,6 +622,8 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
     asr_model = "small"
     allow_model_download = False
     language: str | None = None
+    inline_terms: list[str] = []
+    term_files: list[Path] = []
     frames = False
     frame_interval = DEFAULT_FRAME_INTERVAL
     max_frames = DEFAULT_MAX_FRAMES
@@ -648,12 +674,23 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
         elif token == "--allow-model-download":
             allow_model_download = True
             index += 1
+        elif token == "--term" and index + 1 < len(rest):
+            inline_terms.append(rest[index + 1])
+            index += 2
+        elif token == "--terms" and index + 1 < len(rest):
+            term_files.append(Path(rest[index + 1]))
+            index += 2
         elif token == "--language" and index + 1 < len(rest):
             language = rest[index + 1]
             index += 2
         else:
             _queue_usage()
             return 2
+    try:
+        terms = load_terms(inline_terms, term_files)
+    except ValueError as exc:
+        print(f"queue: {exc}", file=sys.stderr)
+        return 2
     with open_state(state_path) as state:
         result = state.ingest_queue_item(
             queue_item_id,
@@ -662,6 +699,7 @@ def _queue_ingest(args: Sequence[str], state_path: Path, json_output: bool) -> i
             asr_model=asr_model,
             allow_model_download=allow_model_download,
             language=language,
+            terms=terms,
             frames=frames,
             frame_interval=frame_interval,
             max_frames=max_frames,
@@ -802,6 +840,10 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
     except (ValueError, OSError):
         frames_document = None
     frame_count = None if frames_document is None else len(frames_document.root)
+    metadata = None
+    if evidence is not None:
+        with suppress(ValueError, OSError):
+            metadata = read_transcript_metadata(Path(bundle.bundle_path), manifest, evidence.source)
     try:
         speakers_document = read_diarization(Path(bundle.bundle_path), manifest)
     except (ValueError, OSError):
@@ -840,6 +882,9 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
         "layers": layers,
         "bundle_dir": redact_paths(bundle.bundle_path),
     }
+    if metadata is not None and metadata.backend.terms:
+        payload["terms"] = [redact_paths(term) for term in metadata.backend.terms]
+        payload["terms_applied"] = metadata.backend.terms_applied
     if json_output:
         _print_json(payload)
     else:
@@ -859,6 +904,20 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
             visual_description = (
                 f"yes ({frame_count} frames)" if frame_count is not None else "yes (frames unknown)"
             )
+        terms_description = ""
+        if metadata is not None and metadata.backend.terms:
+            backend = metadata.backend
+            disposition = (
+                f"passed to {_plain_search_field(redact_paths(backend.kind))}"
+                if backend.terms_applied
+                else "not applied to sidecar"
+            )
+            term_list = _plain_search_field(json.dumps(payload["terms"], ensure_ascii=False))
+            terms_description = (
+                f"Terms: {len(backend.terms or [])} ({disposition})\n"
+                f"Term list: {term_list}\n"
+                f"Terms applied: {json.dumps(payload['terms_applied'])}\n"
+            )
         print(
             f"Bundle: {bundle.bundle_id}\n"
             f"Title: {_plain_search_field(title)}\n"
@@ -868,6 +927,7 @@ def _library_show(args: Sequence[str], state_path: Path, json_output: bool) -> i
             f"Source kind: {source_kind}\n"
             f"Duration: {format_time(manifest.source.duration_s, duration=True)}\n"
             f"Transcript method: {payload['transcript_method'] or 'unknown'}\n"
+            f"{terms_description}"
             f"Segments: {payload['segment_count'] if segments is not None else 'unknown'}\n"
             f"Words: {payload['word_count'] if segments is not None else 'unknown'}\n"
             f"Transcript: {'yes' if layers['transcript'] else 'no'}\n"
@@ -1119,6 +1179,7 @@ def _queue_usage() -> None:
         "{list [--queue-state STATE]|show ITEM|approve ITEM|skip ITEM|retry ITEM|"
         "ingest ITEM [--output DIR] [--transcriber-command COMMAND] "
         "[--asr-model NAME] [--allow-model-download] [--language CODE] "
+        "[--term NAME] [--terms FILE] "
         "[--frames] [--frame-interval SECONDS] [--max-frames N] "
         "[--diarize] [--speakers N] [--diarize-models DIR]} "
         "[--state PATH] [--json]",
