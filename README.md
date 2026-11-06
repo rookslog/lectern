@@ -99,8 +99,12 @@ With no `--transcriber-command`, ingest reads caption files beside the media:
 `talk.pt-BR.srt`, before falling back to `talk.transcript.txt`. Exact VTT takes
 precedence over exact SRT; otherwise the alphabetically first language-tagged
 filename is selected. The bundle records the selected caption filename and cue
-times. VTT markup is removed and repeated rolling auto-caption lines are
-de-duplicated.
+times. VTT markup is removed. Rolling auto-caption lines are de-duplicated only
+when inline word timings or multi-line carry-over reveal rolling structure;
+ordinary separately timed cues keep identical text. Queue approvals bind the
+derived language and caption method for language-tagged sidecars, so changing
+either requires a rescan and approval. Untagged sidecars keep their existing
+approval digests.
 
 Without a sidecar, the optional `lectern[asr]` extra provides local
 faster-whisper transcription of normalized audio:
@@ -116,9 +120,19 @@ First run: pass `--allow-model-download` once to let
 later runs use the cached model offline. Inference stays local. Both `lectern ingest`
 and `lectern queue ingest` accept `--asr-model NAME`, `--allow-model-download`, and
 optional `--language CODE`. Downloads are disabled by default, and the bundle records
-whether model downloads were allowed.
+whether model downloads were allowed. A local converted-model directory must
+contain `tokenizer.json` in cached-only mode; otherwise ingest refuses it before
+loading the backend, because its tokenizer fallback can fetch from the network.
+Use `--allow-model-download` to permit that fallback. Hub IDs such as
+`org/custom-whisper` are recorded verbatim; existing local model directories and
+explicit filesystem paths are recorded as `local:<name>` without their parent path.
+
 Without a language override, ASR auto-detects the language; captions use the
-filename's language tag when present. The bundle records language and ASR backend
+filename's language tag when present. `--language CODE` overrides command and
+sidecar transcript labels. For faster-whisper it requests a language, but the
+bundle always records the backend's effective language. If that differs from
+the request (for example, with an English-only model), ingest prints one warning
+naming both languages. The bundle records language and ASR backend
 details, including language probability. Captions (including third-party and
 auto-generated captions) and ASR output make no transcript faithfulness claim.
 

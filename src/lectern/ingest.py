@@ -15,6 +15,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import wave
 from collections.abc import Generator, Sequence
@@ -46,6 +47,7 @@ from lectern.keyframes import (
 from lectern.readable import format_time, source_details
 from lectern.records import AutomationError, approval_digest
 from lectern.sources.local import (
+    caption_sidecar_approval_metadata,
     caption_sidecar_language,
     info_sidecar_path,
     transcript_sidecar_path,
@@ -187,12 +189,19 @@ class PreparedLocalIngest:
             source_duration = _wav_duration_seconds(audio_path)
 
             if self._command is not None:
-                transcript = _transcribe_with_local_command(
-                    self._command, audio_path, source_duration
+                transcript = _with_language(
+                    _transcribe_with_local_command(self._command, audio_path, source_duration),
+                    self._language,
                 )
             elif self._sidecar_payload is not None:
-                transcript = _sidecar_transcript(
-                    source, self._sidecar_payload, source_duration, sidecar_path=self._sidecar_path
+                transcript = _with_language(
+                    _sidecar_transcript(
+                        source,
+                        self._sidecar_payload,
+                        source_duration,
+                        sidecar_path=self._sidecar_path,
+                    ),
+                    self._language,
                 )
             else:
                 transcript = _transcribe_with_asr(
@@ -201,7 +210,6 @@ class PreparedLocalIngest:
                     self._language,
                     allow_model_download=self._allow_model_download,
                 )
-            transcript = _with_language(transcript, self._language)
 
             frames = None
             if self._frames:
@@ -352,7 +360,12 @@ def prepare_local_ingest(
             hashlib.sha256(sidecar_payload).hexdigest() if sidecar_payload is not None else None
         )
         info_digest = hashlib.sha256(info_payload).hexdigest() if info_payload is not None else None
-        composite = approval_digest(media_digest, sidecar_digest, info_digest)
+        composite = approval_digest(
+            media_digest,
+            sidecar_digest,
+            info_digest,
+            caption_metadata=caption_sidecar_approval_metadata(source, sidecar),
+        )
         if expected_approval_sha256 is not None and composite != expected_approval_sha256:
             raise AutomationError("source file changed since queue approval; rescan before ingest")
         yield PreparedLocalIngest(
@@ -539,8 +552,8 @@ def _caption_seconds(timestamp: str) -> float:
 
 
 def _caption_segments(transcript: str, kind: str) -> tuple[TranscriptSegment, ...]:
-    segments: list[TranscriptSegment] = []
-    previous_last_line = ""
+    cues: list[tuple[float, float, list[str]]] = []
+    has_inline_times = False
     for block in re.split(r"\n[ \t]*\n", transcript):
         lines = block.strip().splitlines()
         if not lines or re.match(r"^(?:WEBVTT|NOTE|STYLE|REGION)(?:\s|$)", lines[0]):
@@ -554,17 +567,30 @@ def _caption_segments(transcript: str, kind: str) -> tuple[TranscriptSegment, ..
         start_s, end_s = (_caption_seconds(value) for value in timing.groups())
         if end_s < start_s:
             raise IngestError("caption cue end must not precede start")
+        cue_lines = lines[timing_index + 1 :]
+        has_inline_times |= any(re.search(rf"<{_CAPTION_TIME}>", line) for line in cue_lines)
         cleaned_lines = [
-            " ".join(html.unescape(re.sub(r"<[^>]*>", "", line)).split())
-            for line in lines[timing_index + 1 :]
+            " ".join(html.unescape(re.sub(r"<[^>]*>", "", line)).split()) for line in cue_lines
         ]
         cleaned_lines = [line for line in cleaned_lines if line]
         if not cleaned_lines:
             continue
+        cues.append((start_s, end_s, cleaned_lines))
+    # A repeated single-line cue alone is ordinary speech, not carry-over.
+    rolling = kind == "vtt" and (
+        has_inline_times
+        or any(
+            previous[-1] == current[0] and (len(previous) > 1 or len(current) > 1)
+            for (_, _, previous), (_, _, current) in zip(cues, cues[1:], strict=False)
+        )
+    )
+    segments: list[TranscriptSegment] = []
+    previous_last_line = ""
+    for start_s, end_s, cleaned_lines in cues:
         # YouTube emits the previous last line again at the start of the next
         # cue, including brief repeat-only cues. Keep that line as the rolling
         # reference even when stripping it leaves no new text.
-        repeated_first_line = kind == "vtt" and cleaned_lines[0] == previous_last_line
+        repeated_first_line = rolling and cleaned_lines[0] == previous_last_line
         previous_last_line = cleaned_lines[-1]
         text = "\n".join(cleaned_lines[1:] if repeated_first_line else cleaned_lines)
         if text:
@@ -579,6 +605,16 @@ def _caption_segments(transcript: str, kind: str) -> tuple[TranscriptSegment, ..
 def _transcribe_with_asr(
     model: str, audio: Path, language: str | None, *, allow_model_download: bool = False
 ) -> TranscriptResult:
+    model_path = Path(model).expanduser()
+    if (
+        not allow_model_download
+        and model_path.is_dir()
+        and not (model_path / "tokenizer.json").is_file()
+    ):
+        raise IngestError(
+            "local ASR model directory is missing tokenizer.json; "
+            "provide that file or pass --allow-model-download to allow the tokenizer fallback"
+        )
     try:
         backend = asr.create_asr_backend(model, allow_model_download=allow_model_download)
     except ImportError as exc:
@@ -600,6 +636,12 @@ def _transcribe_with_asr(
     )
     if not segments:
         raise IngestError("local ASR produced no non-empty segments")
+    if language is not None and result.language != language:
+        print(
+            f"ingest: warning: requested ASR language {language!r}, "
+            f"but backend reported {result.language!r}; recording {result.language!r}",
+            file=sys.stderr,
+        )
     provenance = {
         "kind": "faster_whisper",
         "model": asr.model_identifier(result.model),
