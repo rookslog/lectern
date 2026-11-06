@@ -31,7 +31,11 @@ from pydantic import (
 from lectern.records import redact_paths
 
 SCHEMA_VERSION = "1.1.0"
-_RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})")
+# Bound the ranges here: Python 3.14's fromisoformat accepts hour 24 (next midnight).
+_RFC3339 = re.compile(
+    r"\d{4}-\d{2}-\d{2}[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?"
+    r"(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)"
+)
 CONTENT_REF_PATTERN = r"^sha256:[0-9a-f]{64}$"
 _CONTENT_REF = re.compile(CONTENT_REF_PATTERN)
 
