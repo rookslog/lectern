@@ -92,7 +92,10 @@ def extract_frames(
             f"gt(scene,0.30)+isnan(prev_selected_t)"
             f"+gt(floor(t/{interval}),floor(prev_selected_t/{interval}))"
         )
-        selection_chain = f"[0:v:0]setpts=PTS-STARTPTS,select='{selection}'"
+        # FFmpeg rebases inputs to the container start by default, preserving
+        # audio/video offsets. Rebasing video alone would cite delayed frames early.
+        # Both passes must use the same common-timeline selection chain.
+        selection_chain = f"[0:v:0]select='{selection}'"
         sizing = (
             "scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease,showinfo"
         )
