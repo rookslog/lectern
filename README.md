@@ -160,6 +160,31 @@ naming both languages. The bundle records language and ASR backend
 details, including language probability. Captions (including third-party and
 auto-generated captions) and ASR output make no transcript faithfulness claim.
 
+Both ingest commands accept repeatable `--term NAME` and `--terms FILE` for
+user-supplied named-term hints. The UTF-8 file has one term per line; blank lines
+and lines beginning with `#` (after whitespace) are ignored. File terms follow
+all `--term` values, regardless of flag order. Terms are stripped, must contain
+1–64 characters without controls or newlines, and are de-duplicated exactly,
+preserving the first occurrence and order, with at most 50 distinct terms.
+Lectern never derives terms automatically, including from `info.json`.
+
+```bash
+uv run lectern ingest local-talk.wav --term Schmitt --term Kelsen --terms names.txt
+```
+
+For faster-whisper, Lectern passes a single space-joined `hotwords` string. For
+command transcribers, it sets `LECTERN_TERMS` to the terms joined by newlines,
+without changing the command's arguments; the variable is unset when no terms
+are supplied, even if it exists in the parent environment. Transcript sidecars
+do not use hints: ingest prints a warning and records `terms_applied: false`.
+The transcript identity and backend provenance record the exact term list and
+whether it was passed (`terms_applied`, not evidence of backend use or quality).
+Different terms produce distinct bundle identities; absent terms preserve
+existing identities and provenance. `library show` reports the count and
+backend (or that sidecar hints were not applied), and talk packets include terms
+in `layers.transcript` when present, subject to their existing path redaction.
+Lectern passes your terms to the transcriber and records them; it makes no claim that they improve accuracy.
+
 ### Speakers
 
 `--diarize` adds local, anonymous speaker labels (`S1`, `S2`, …) to panels,

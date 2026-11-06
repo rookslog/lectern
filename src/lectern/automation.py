@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+from collections.abc import Sequence
 from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
@@ -313,6 +314,7 @@ class AutomationState(AutomationStateStore):
         asr_model: str = "small",
         allow_model_download: bool = False,
         language: str | None = None,
+        terms: Sequence[str] = (),
         frames: bool = False,
         frame_interval: float = DEFAULT_FRAME_INTERVAL,
         max_frames: int = DEFAULT_MAX_FRAMES,
@@ -340,6 +342,7 @@ class AutomationState(AutomationStateStore):
                         asr_model=asr_model,
                         allow_model_download=allow_model_download,
                         language=language,
+                        terms=terms,
                         frames=frames,
                         frame_interval=frame_interval,
                         max_frames=max_frames,
@@ -460,6 +463,7 @@ class AutomationState(AutomationStateStore):
         asr_model: str = "small",
         allow_model_download: bool = False,
         language: str | None = None,
+        terms: Sequence[str] = (),
         frames: bool = False,
         frame_interval: float = DEFAULT_FRAME_INTERVAL,
         max_frames: int = DEFAULT_MAX_FRAMES,
@@ -473,6 +477,7 @@ class AutomationState(AutomationStateStore):
             asr_model=asr_model,
             allow_model_download=allow_model_download,
             language=language,
+            terms=terms,
             frames=frames,
             frame_interval=frame_interval,
             max_frames=max_frames,

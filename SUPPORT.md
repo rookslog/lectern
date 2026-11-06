@@ -47,6 +47,26 @@ The current `0.1.0` to `1.0.0` bundle procedure is documented in
 [docs/MIGRATIONS.md](docs/MIGRATIONS.md). Manifest `1.0.0` does not mean the
 Lectern package has reached `1.0.0`; that legacy migration target stays unchanged.
 
+Named-term hints extend the local `transcript/metadata.json` artifact, not the
+manifest wire format. The [2026-11-06 scoped preview amendment to
+ADR-0003](docs/adr/0003-bundle-artifact-format.md#scoped-preview-amendment--2026-11-06)
+introduces this local-artifact exception; it was not part of the original ADR.
+Manifest schema-version semver discipline remains in force. The artifact's
+`lectern.transcript.metadata.v0` tag remains unchanged, and it records
+`schema_contract.manifest_schema_versioned: false`. The optional `terms` and
+`terms_applied` backend fields are an in-place extension requiring updated strict
+artifact readers: older strict readers without these fields reject hints-bearing
+metadata. With no terms, those fields remain omitted and transcript identity and
+backend provenance bytes are unchanged. This scoped preview behavior is not a
+stable API or a general forward-compatibility promise, and does not introduce
+migration or version negotiation.
+
+Packet JSON/Markdown and library-show JSON/readable output retain the recorded
+term list and `terms_applied` disposition, subject to path redaction and plain
+rendering. The flag distinguishes terms passed to the transcriber from terms
+not applied to a sidecar; it is not evidence of improved accuracy or that the
+backend honored every term. Absent terms add no fields or lines to these views.
+
 The pre-release `1.0.0` contract requires nonblank transcript segment text:
 at least one character must fall outside Python's Unicode whitespace set.
 This requirement was tightened in place while establishing that contract.
