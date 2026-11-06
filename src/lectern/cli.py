@@ -995,7 +995,13 @@ def _check_citations(args: Sequence[str]) -> int:
     else:
         for citation in report["citations"]:
             if citation["status"] != "ok":
-                print(f"{_plain_search_field(citation['token'])}: {citation['status']}")
+                detail = ""
+                if citation["status"] == "time_mismatch":
+                    corrected = _plain_search_field(citation["corrected_token"])
+                    detail = f" (expected {citation['expected_time']}; use {corrected})"
+                print(f"{_plain_search_field(citation['token'])}: {citation['status']}{detail}")
+        for paragraph in report["uncited"]:
+            print(f"uncited paragraph at line {paragraph['line']}: {paragraph['excerpt']}")
         print(
             f"citations: {report['ok']} ok, {report['problems']} problems; "
             f"uncited paragraphs: {report['uncited_paragraphs']}"

@@ -21,7 +21,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from lectern.bundle import Manifest
+from lectern.bundle import MANIFEST_NAME, Manifest, atomic_write_text
 from lectern.diarization import DEFAULT_DIARIZE_MODELS
 from lectern.ingest import (
     BundleExistsError,
@@ -40,6 +40,7 @@ from lectern.ingest import (
 )
 from lectern.keyframes import DEFAULT_FRAME_INTERVAL, DEFAULT_MAX_FRAMES
 from lectern.provenance import (
+    PENDING_PROVENANCE_NAME,
     PROVENANCE_KEYS,
     attach_provenance_to_bundle,
     bundle_provenance_needs_repair,
@@ -68,7 +69,9 @@ from lectern.records import (
     make_source_item_id,
     metadata_to_json,
     now_timestamp,
+    redact_paths,
 )
+from lectern.replay import admit_replay
 from lectern.sources import default_source_adapter
 from lectern.sources.local import (
     EXCLUDED_SCAN_DIR_NAMES,
@@ -361,24 +364,28 @@ class AutomationState(AutomationStateStore):
                 planned_bundle_id = prepared.planned_bundle_id()
                 if planned_bundle_id is not None:
                     completed_result = self._queue_owned_bundle_result(
-                        queue_item, planned_bundle_id
+                        queue_item,
+                        planned_bundle_id,
+                        source=source,
+                        source_item=source_item,
+                        consent="explicit_queue_approval",
                     )
                     if completed_result is not None:
-                        self._set_queue_state(
-                            queue_item.id,
-                            QueueState.COMPLETED,
-                            bundle_id=planned_bundle_id,
-                            clear_error=True,
-                        )
-                        return self._repaired_replay_result(
-                            completed_result,
-                            source=source,
-                            source_item=source_item,
-                            queue_item_id=queue_item.id,
-                            consent="explicit_queue_approval",
-                        )
+                        return completed_result
                     self._ensure_bundle_id_available(planned_bundle_id, queue_item, output_root)
-                result = prepared.ingest(output_root)
+                try:
+                    result = prepared.ingest(output_root)
+                except BundleExistsError as exc:
+                    completed_result = self._queue_owned_bundle_result(
+                        queue_item,
+                        exc.bundle_id,
+                        source=source,
+                        source_item=source_item,
+                        consent="explicit_queue_approval",
+                    )
+                    if completed_result is not None:
+                        return completed_result
+                    raise
                 try:
                     self._ensure_library_bundle_id_available(result.manifest.bundle_id, queue_item)
                 except AutomationError:
@@ -388,22 +395,6 @@ class AutomationState(AutomationStateStore):
                 self._record_ingest_failure(queue_item, str(exc))
                 raise
             except (IngestError, OSError) as exc:
-                if isinstance(exc, BundleExistsError):
-                    completed_result = self._queue_owned_bundle_result(queue_item, exc.bundle_id)
-                    if completed_result is not None:
-                        self._set_queue_state(
-                            queue_item.id,
-                            QueueState.COMPLETED,
-                            bundle_id=exc.bundle_id,
-                            clear_error=True,
-                        )
-                        return self._repaired_replay_result(
-                            completed_result,
-                            source=source,
-                            source_item=source_item,
-                            queue_item_id=queue_item.id,
-                            consent="explicit_queue_approval",
-                        )
                 self._record_ingest_failure(queue_item, str(exc))
                 raise
 
@@ -500,47 +491,32 @@ class AutomationState(AutomationStateStore):
                 mtime_ns=prepared.mtime_ns,
             )
             queue_item = self._ensure_one_shot_queue(source, source_item)
-            if planned_bundle_id is not None:
-                completed_result = self._queue_owned_bundle_result(queue_item, planned_bundle_id)
-                if completed_result is not None:
-                    self._set_queue_state(
-                        queue_item.id,
-                        QueueState.COMPLETED,
-                        bundle_id=planned_bundle_id,
-                        clear_error=True,
-                    )
-                    return self._repaired_replay_result(
-                        completed_result,
-                        source=source,
-                        source_item=source_item,
-                        queue_item_id=queue_item.id,
-                        consent="explicit_cli_invocation",
-                    )
             try:
                 if planned_bundle_id is not None:
-                    self._ensure_bundle_id_available(planned_bundle_id, queue_item, output_root)
-            except AutomationError as exc:
-                self._record_ingest_failure(queue_item, str(exc))
-                raise
-            try:
-                result = prepared.ingest(output_root)
-            except (IngestError, OSError) as exc:
-                if isinstance(exc, BundleExistsError):
-                    completed_result = self._queue_owned_bundle_result(queue_item, exc.bundle_id)
+                    completed_result = self._queue_owned_bundle_result(
+                        queue_item,
+                        planned_bundle_id,
+                        source=source,
+                        source_item=source_item,
+                        consent="explicit_cli_invocation",
+                    )
                     if completed_result is not None:
-                        self._set_queue_state(
-                            queue_item.id,
-                            QueueState.COMPLETED,
-                            bundle_id=exc.bundle_id,
-                            clear_error=True,
-                        )
-                        return self._repaired_replay_result(
-                            completed_result,
-                            source=source,
-                            source_item=source_item,
-                            queue_item_id=queue_item.id,
-                            consent="explicit_cli_invocation",
-                        )
+                        return completed_result
+                    self._ensure_bundle_id_available(planned_bundle_id, queue_item, output_root)
+                try:
+                    result = prepared.ingest(output_root)
+                except BundleExistsError as exc:
+                    completed_result = self._queue_owned_bundle_result(
+                        queue_item,
+                        exc.bundle_id,
+                        source=source,
+                        source_item=source_item,
+                        consent="explicit_cli_invocation",
+                    )
+                    if completed_result is not None:
+                        return completed_result
+                    raise
+            except (AutomationError, IngestError, OSError) as exc:
                 self._record_ingest_failure(queue_item, str(exc))
                 raise
             try:
@@ -628,27 +604,43 @@ class AutomationState(AutomationStateStore):
         )
 
     def _queue_owned_bundle_result(
-        self, queue_item: QueueItem, candidate_id: str
+        self,
+        queue_item: QueueItem,
+        candidate_id: str,
+        *,
+        source: SourceRecord,
+        source_item: SourceItem,
+        consent: str,
     ) -> IngestResult | None:
-        library_bundle = self._existing_library_bundle(candidate_id)
-        if library_bundle is None:
+        library = self._existing_library_bundle(candidate_id)
+        admission = admit_replay(
+            candidate_id,
+            library,
+            queue_item=queue_item,
+            source=source,
+            source_item=source_item,
+            consent=consent,
+        )
+        if not admission.owned:
             return None
-        if (
-            library_bundle.queue_item_id != queue_item.id
-            or library_bundle.source_id != queue_item.source_id
-            or library_bundle.source_item_id != queue_item.source_item_id
-        ):
-            return None
-        bundle_dir = Path(library_bundle.bundle_path)
-        if not bundle_dir.is_dir():
-            return None
-        try:
-            manifest = Manifest.load(bundle_dir)
-        except (OSError, ValueError, RecursionError):
-            return None
-        if manifest.bundle_id != candidate_id:
-            return None
-        return IngestResult(bundle_dir=bundle_dir, manifest=manifest)
+        if admission.outcome == "refuse":
+            raise AutomationError(f"replay refused: {admission.reason}")
+        assert library is not None and admission.manifest is not None
+        result = IngestResult(bundle_dir=Path(library.bundle_path), manifest=admission.manifest)
+        if admission.outcome == "admit_after_provenance_repair":
+            result = self._repaired_replay_result(
+                result,
+                source=source,
+                source_item=source_item,
+                queue_item_id=queue_item.id,
+                consent=consent,
+                source_recovery=admission.source_recovery,
+            )
+        # Do not repoint a prior completion until repair and re-admission pass.
+        self._set_queue_state(
+            queue_item.id, QueueState.COMPLETED, bundle_id=candidate_id, clear_error=True
+        )
+        return result
 
     def _repaired_replay_result(
         self,
@@ -658,28 +650,64 @@ class AutomationState(AutomationStateStore):
         source_item: SourceItem,
         queue_item_id: str,
         consent: str,
+        source_recovery: bytes | None = None,
     ) -> IngestResult:
-        """Re-attach provenance to a replayed bundle left stale by a crash.
+        """Repair only an admitted candidate, then re-admit its actual disk state."""
 
-        Completion commits before provenance is attached, so a replay can find a
-        completed, library-recorded bundle whose provenance never landed. Re-attach
-        is idempotent (identical inputs rewrite identical bytes), so a healthy
-        bundle is returned untouched.
-        """
-
-        if not bundle_provenance_needs_repair(result.bundle_dir):
-            return result
-        attach_provenance_to_bundle(
-            result.bundle_dir,
-            source=source,
-            source_item=source_item,
-            queue_item=self.get_queue_item(queue_item_id),
-            consent=consent,
-        )
-        return IngestResult(
-            bundle_dir=result.bundle_dir,
-            manifest=Manifest.load(result.bundle_dir),
-        )
+        originals = {
+            name: (result.bundle_dir / name).read_bytes() for name in ("source.json", MANIFEST_NAME)
+        }
+        pending_path = result.bundle_dir / PENDING_PROVENANCE_NAME
+        pending_original = pending_path.read_bytes() if pending_path.exists() else None
+        pending_mode = pending_path.stat().st_mode & 0o777 if pending_original is not None else None
+        try:
+            attach_provenance_to_bundle(
+                result.bundle_dir,
+                source=source,
+                source_item=source_item,
+                # Describe the completion this replay will commit only after
+                # the repaired bundle passes admission.
+                queue_item=replace(self.get_queue_item(queue_item_id), state=QueueState.COMPLETED),
+                consent=consent,
+                source_recovery=source_recovery,
+            )
+            admission = admit_replay(
+                result.manifest.bundle_id,
+                self._existing_library_bundle(result.manifest.bundle_id),
+                queue_item=self.get_queue_item(queue_item_id),
+                source=source,
+                source_item=source_item,
+                consent=consent,
+            )
+            if admission.outcome != "admit" or admission.manifest is None:
+                raise AutomationError(
+                    "replay refused after provenance repair: "
+                    f"{admission.reason or admission.outcome}"
+                )
+        except Exception as exc:
+            # A rejected/failed repair must not leave its writer-owned files
+            # changed. Hard process interruption still leaves the ordinary
+            # recoverable source/manifest window for the next replay.
+            for name, payload in originals.items():
+                path = result.bundle_dir / name
+                if path.is_symlink() or not path.exists() or path.read_bytes() != payload:
+                    atomic_write_text(path, payload.decode("utf-8"))
+            if pending_original is None:
+                pending_path.unlink(missing_ok=True)
+            elif (
+                pending_path.is_symlink()
+                or not pending_path.exists()
+                or pending_path.read_bytes() != pending_original
+            ):
+                atomic_write_text(
+                    pending_path, pending_original.decode("utf-8"), permission_ceiling=pending_mode
+                )
+            if isinstance(exc, AutomationError):
+                raise
+            raise AutomationError(
+                f"replay refused during provenance repair: {redact_paths(str(exc))}"
+            ) from exc
+        return IngestResult(bundle_dir=result.bundle_dir, manifest=admission.manifest)
 
     def _record_ingest_failure(self, queue_item: QueueItem, message: str) -> None:
         prior_id = self._restorable_queue_bundle_id(queue_item)

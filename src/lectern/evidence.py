@@ -16,6 +16,7 @@ from lectern.bundle import (
     TranscriptMetadataDocument,
     TranscriptSegmentsDocument,
 )
+from lectern.integrity import contained_artifact_path
 
 
 @dataclass(frozen=True)
@@ -26,20 +27,7 @@ class SelectedEvidence:
 
 
 def _contained_payload(bundle: Path, relative: str) -> bytes:
-    if bundle.is_symlink():
-        raise ValueError("evidence bundle root must not be a symlink")
-    path = Path(relative)
-    if path.is_absolute() or ".." in path.parts:
-        raise ValueError("evidence path escapes the bundle")
-    candidate = bundle
-    for part in path.parts:
-        candidate /= part
-        if candidate.is_symlink():
-            raise ValueError("evidence path must not contain a symlink")
-    resolved = candidate.resolve(strict=True)
-    if not resolved.is_relative_to(bundle.resolve(strict=True)) or not resolved.is_file():
-        raise ValueError("evidence must be a contained regular file")
-    return resolved.read_bytes()
+    return contained_artifact_path(bundle, relative).read_bytes()
 
 
 def _assert_declared_payload(manifest: Manifest, path: str, payload: bytes) -> None:
@@ -70,6 +58,25 @@ def read_selected_evidence(
     if require_manifest_integrity:
         _assert_declared_payload(manifest, "source.json", source_payload)
     source = SourceDocument.model_validate_json(source_payload, strict=True)
+    return read_selected_segments(
+        bundle, manifest, source, require_manifest_integrity=require_manifest_integrity
+    )
+
+
+def read_selected_segments(
+    bundle: Path,
+    manifest: Manifest,
+    source: SourceDocument,
+    *,
+    require_manifest_integrity: bool,
+) -> SelectedEvidence:
+    """Read selected segments for an already validated source document.
+
+    Replay preflight validates the source core separately because its annotation
+    may need repair. Segment containment, declarations and parsing stay identical
+    to search and new-citation reads.
+    """
+
     segments_payload = _contained_payload(bundle, source.transcript.segments)
     if require_manifest_integrity:
         _assert_declared_payload(manifest, source.transcript.segments, segments_payload)

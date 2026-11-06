@@ -385,7 +385,11 @@ def now_timestamp() -> str:
 
 
 def approval_digest(
-    media_sha256: str, sidecar_sha256: str | None, info_sha256: str | None = None
+    media_sha256: str,
+    sidecar_sha256: str | None,
+    info_sha256: str | None = None,
+    *,
+    caption_metadata: tuple[str, str] | None = None,
 ) -> str:
     """Existing approval identity, composed from captured component digests."""
 
@@ -399,6 +403,13 @@ def approval_digest(
     # and every byte change are covered when an info sidecar is supplied.
     if info_sha256 is not None:
         digest.update(b"\0info-sidecar\0" + info_sha256.encode("ascii"))
+    # As with info metadata, absence keeps legacy approvals byte-identical.
+    if caption_metadata is not None:
+        language, method = caption_metadata
+        digest.update(
+            b"\0caption-metadata\0"
+            + metadata_to_json({"language": language, "method": method}).encode("utf-8")
+        )
     return digest.hexdigest()
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 import wave
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -78,9 +79,21 @@ class _WhisperModule(Protocol):
 def model_identifier(model: str) -> str:
     """Keep model provenance useful without recording a local filesystem path."""
 
-    path = Path(model.replace("\\", "/")).expanduser()
-    if "/" in model or "\\" in model or path.is_dir():
-        return f"local:{path.name or path.resolve().name}"
+    try:
+        path = Path(model).expanduser()
+    except RuntimeError:
+        path = Path(model)
+    # Redact existing directories after ~ expansion, plus explicit /, ~, drive
+    # or backslash paths even if missing; preserve every other value (including Hub IDs).
+    if (
+        path.is_dir()
+        or model.startswith(("/", "~"))
+        or "\\" in model
+        or re.match(r"^[A-Za-z]:", model)
+    ):
+        normalized = re.sub(r"^[A-Za-z]:", "", str(path).replace("\\", "/"))
+        name = Path(normalized).name or path.resolve().name
+        return f"local:{name}"
     return model
 
 

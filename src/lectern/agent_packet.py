@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Any, cast
@@ -21,8 +22,8 @@ CITATION_INSTRUCTION = (
 )
 _SHORT_ID = re.compile(r"[0-9a-f]{12}")
 _CITATION = re.compile(
-    r"\[t=(?P<time>(?:[0-9]+:)?[0-5][0-9]:[0-5][0-9]) "
-    r"(?P<bundle>[^\s\[\]#]+)#(?P<frame>f)?(?P<segment>[0-9]+)\]"
+    r"\[t=(?P<time>-?(?:[0-9]{1,6}:)?[0-5][0-9]:[0-5][0-9]) "
+    r"(?P<bundle>[^\s\[\]#]+)#(?P<frame>f)?(?P<segment>[0-9]{1,9})\]"
 )
 _CITATION_LIKE = re.compile(r"\[t=[^\[\]\r\n]*\]")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
@@ -37,11 +38,17 @@ def talk_packet(state: AutomationStateStore, bundle_id: str) -> dict[str, Any]:
     if bundle.status is not LibraryStatus.READY:
         raise AutomationError(f"bundle {bundle_id} is {bundle.status.value}; requires ready")
     evidence = state.get_registered_evidence(bundle_id)
-    # Only an ingest-shaped id (`<slug>-<12 hex>`) has a short form the checker can
-    # expand; anything else (e.g. a migrated id) is cited by its full, projected id.
+    # Keep ingest suffixes and safe full migrated ids; unsafe ids need a stable,
+    # path-free digest that the checker can expand against registered identities.
     suffix = bundle_id.rsplit("-", 1)[-1]
     short_id = suffix if "-" in bundle_id and _SHORT_ID.fullmatch(suffix) else None
-    cite_id = short_id if short_id is not None else redact_paths(bundle_id)
+    cite_id = short_id
+    if cite_id is None:
+        cite_id = (
+            bundle_id
+            if re.fullmatch(r"[^\s\[\]#]+", bundle_id) and redact_paths(bundle_id) == bundle_id
+            else hashlib.sha256(bundle_id.encode("utf-8")).hexdigest()[:12]
+        )
     manifest = state.get_library_manifest(bundle_id)
     metadata = read_transcript_metadata(Path(bundle.bundle_path), manifest, evidence.source)
     visual = read_frames(Path(bundle.bundle_path), manifest)
@@ -243,7 +250,7 @@ def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:
     """Short tokens name current segments/frames, not historical snapshots."""
 
     cache: dict[tuple[str, bool], tuple[str | None, list[dict[str, Any]]]] = {}
-    suffixes: dict[str, list[str]] | None = None
+    short_ids: dict[str, set[str]] | None = None
     citations: list[dict[str, Any]] = []
     for token in _CITATION_LIKE.finditer(text):
         match = _CITATION.fullmatch(token[0])
@@ -255,6 +262,7 @@ def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:
                     "segment_id": None,
                     "time": None,
                     "expected_time": None,
+                    "corrected_token": None,
                     "status": "malformed",
                 }
             )
@@ -263,14 +271,16 @@ def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:
         is_frame = match["frame"] is not None
         identifier_field = "frame_index" if is_frame else "segment_id"
         if _SHORT_ID.fullmatch(bundle_id):
-            if suffixes is None:
-                suffixes = {}
+            if short_ids is None:
+                short_ids = {}
                 for registered_id in state.list_registered_bundle_ids():
                     suffix = registered_id.rsplit("-", 1)[-1]
-                    suffixes.setdefault(suffix, []).append(registered_id)
-            candidates = suffixes.get(bundle_id, [])
+                    digest = hashlib.sha256(registered_id.encode("utf-8")).hexdigest()[:12]
+                    for short_id in (suffix, digest):
+                        short_ids.setdefault(short_id, set()).add(registered_id)
+            candidates = short_ids.get(bundle_id, set())
             if len(candidates) == 1:
-                bundle_id = candidates[0]
+                bundle_id = next(iter(candidates))
             else:
                 citations.append(
                     {
@@ -279,6 +289,7 @@ def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:
                         identifier_field: int(match["segment"]),
                         "time": match["time"],
                         "expected_time": None,
+                        "corrected_token": None,
                         "status": "ambiguous_bundle" if candidates else "unknown_bundle",
                     }
                 )
@@ -316,22 +327,21 @@ def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:
         segment_id = int(match["segment"])
         segment = next((s for s in segments if s["id"] == segment_id), None)
         expected_time = None
+        displayed_s = 0
+        for part in match["time"].removeprefix("-").split(":"):
+            displayed_s = displayed_s * 60 + int(part)
+        if match["time"].startswith("-"):
+            displayed_s = -displayed_s
         if status is None:
             if segment is None:
                 status = "unknown_frame" if is_frame else "unknown_segment"
             elif is_frame:
                 expected_time = format_time(segment["start_s"])
-                displayed_s = 0
-                for part in match["time"].split(":"):
-                    displayed_s = displayed_s * 60 + int(part)
                 status = "ok" if displayed_s == int(segment["start_s"]) else "time_mismatch"
             else:
                 anchor = make_anchor(bundle_id, segment_id, segment["start_s"], segment["text"])
                 resolved = resolve_against_segments(anchor, segments)
                 expected_time = format_time(resolved.start_s)
-                displayed_s = 0
-                for part in match["time"].split(":"):
-                    displayed_s = displayed_s * 60 + int(part)
                 if resolved.outcome is not AnchorResolution.EXACT or resolved.start_s is None:
                     status = "unknown_segment"
                 else:
@@ -343,11 +353,28 @@ def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:
                 identifier_field: segment_id,
                 "time": match["time"],
                 "expected_time": expected_time,
+                "corrected_token": (
+                    redact_paths(
+                        match[0][: match.start("time")]
+                        + str(expected_time)
+                        + match[0][match.end("time") :]
+                    )
+                    if status == "time_mismatch"
+                    else None
+                ),
                 "status": status,
             }
         )
-    uncited = 0
-    for paragraph in re.split(r"\n\s*\n", text):
+    uncited: list[dict[str, Any]] = []
+    paragraph_start = 0
+    next_line = 1
+    # Retain the existing paragraph boundaries and exclusions, but carry source
+    # positions forward instead of looking up potentially repeated prose.
+    for separator in re.finditer(r"\n\s*\n|\Z", text):
+        paragraph = text[paragraph_start : separator.start()]
+        paragraph_line = next_line
+        next_line += text[paragraph_start : separator.end()].count("\n")
+        paragraph_start = separator.end()
         lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
         if not lines or _CITATION_LIKE.search(paragraph):
             continue
@@ -355,11 +382,21 @@ def check_citations(state: AutomationStateStore, text: str) -> dict[str, Any]:
             continue
         if all(_HEADING.match(line) or _LIST_MARKER.fullmatch(line) for line in lines):
             continue
-        uncited += 1
+        for offset, line in enumerate(paragraph.split("\n")):
+            if line.strip():
+                uncited.append(
+                    {
+                        "line": paragraph_line + offset,
+                        # Redact before cutting, so a path split at 60 is still recognised.
+                        "excerpt": plain_field(redact_paths(line.removesuffix("\r")))[:60],
+                    }
+                )
+                break
     ok = sum(item["status"] == "ok" for item in citations)
     return {
         "citations": citations,
         "ok": ok,
         "problems": len(citations) - ok,
-        "uncited_paragraphs": uncited,
+        "uncited_paragraphs": len(uncited),
+        "uncited": uncited,
     }
